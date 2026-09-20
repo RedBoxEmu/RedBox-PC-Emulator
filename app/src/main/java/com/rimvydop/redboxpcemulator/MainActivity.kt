@@ -20,6 +20,11 @@ import android.os.RemoteException
 import android.system.Os
 import android.util.Log
 import android.widget.Toast
+import android.content.ClipData
+import android.content.ClipboardManager
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import androidx.activity.ComponentActivity
 import org.libsdl.app.SDLActivity
 import androidx.activity.compose.setContent
@@ -33,6 +38,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
@@ -89,6 +95,60 @@ import java.io.IOException
 import java.util.concurrent.Executors
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicBoolean
+import org.json.JSONArray
+import org.json.JSONObject
+
+private object RedBoxSupportLog {
+    private const val MAX_ENTRIES = 250
+    private val entries = mutableListOf<String>()
+
+    @Synchronized
+    fun add(message: String) {
+        val time = SimpleDateFormat(
+            "yyyy-MM-dd HH:mm:ss",
+            Locale.US
+        ).format(Date())
+
+        val safeMessage = message
+            .replace(Regex("""content://\S+"""), "[content-uri]")
+            .replace(Regex("""file://\S+"""), "[file-uri]")
+
+        entries.add("$time  $safeMessage")
+        while (entries.size > MAX_ENTRIES) {
+            entries.removeAt(0)
+        }
+
+        Log.d("RedBoxSupport", safeMessage)
+    }
+
+    @Synchronized
+    fun clear() {
+        entries.clear()
+        add("Support log cleared")
+    }
+
+    @Synchronized
+    fun buildReport(): String {
+        val body =
+            if (entries.isEmpty()) {
+                "No support events recorded yet."
+            } else {
+                entries.joinToString("\n")
+            }
+
+        return buildString {
+            appendLine("RedBox PC Emulator Support Log")
+            appendLine("App version: 0.1.3")
+            appendLine("Android: ${android.os.Build.VERSION.RELEASE} (API ${android.os.Build.VERSION.SDK_INT})")
+            appendLine("Device: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
+            appendLine("ABI: ${android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown"}")
+            appendLine()
+            appendLine("Privacy note: RedBox does not intentionally include full disk/ISO content URIs in this report.")
+            appendLine()
+            append(body)
+        }
+    }
+}
 
 class MainActivity : SDLActivity() {
 
@@ -712,7 +772,40 @@ class MainActivity : SDLActivity() {
     /*
      * Save the VM so it survives app restarts.
      */
+    /*
+     * v0.1.3 Stage 5A:
+     * Multi-VM storage foundation.
+     *
+     * The visible UI still uses one selected VM during this stage. The VM is
+     * now also stored inside a JSON library so the next stage can expose
+     * multiple saved VMs without changing QEMU execution.
+     *
+     * The old redbox_vm_storage slot is intentionally kept during migration.
+     * This gives existing v0.1.2 installs a safe fallback while v0.1.3 is
+     * being tested.
+     */
     private fun saveVM(vm: VMModel) {
+        saveLegacyVM(vm)
+
+        val library = loadVMLibrary().toMutableList()
+
+        if (library.isEmpty()) {
+            library.add(vm)
+        } else {
+            // Stage 5A has only one visible/selected VM. Update that first
+            // library entry until Stage 5B introduces explicit VM selection.
+            library[0] = vm
+        }
+
+        saveVMLibrary(library)
+
+        Log.d(
+            "RedBoxStorage",
+            "VM saved to legacy slot and v0.1.3 library: ${vm.name}"
+        )
+    }
+
+    private fun saveLegacyVM(vm: VMModel) {
         getSharedPreferences("redbox_vm_storage", MODE_PRIVATE)
             .edit()
             .putString("name", vm.name)
@@ -744,14 +837,155 @@ class MainActivity : SDLActivity() {
             .putString("biosDate", vm.biosDate)
             .putString("soundCard", vm.soundCard)
             .apply()
+    }
 
-        Log.d("RedBoxStorage", "VM saved: ${vm.name}")
+    private fun vmToJson(vm: VMModel): JSONObject =
+        JSONObject().apply {
+            put("name", vm.name)
+            put("architecture", vm.architecture)
+            put("ram", vm.ram)
+            put("cpuCores", vm.cpuCores)
+            put("diskImage", vm.diskImage)
+            put("diskImageName", vm.diskImageName)
+            put("isoImage", vm.isoImage)
+            put("isoImageName", vm.isoImageName)
+            put("driverIsoImage", vm.driverIsoImage)
+            put("driverIsoImageName", vm.driverIsoImageName)
+            put("sharedDiskImage", vm.sharedDiskImage)
+            put("sharedDiskImageName", vm.sharedDiskImageName)
+            put("sharedFolderEnabled", vm.sharedFolderEnabled)
+            put("sharedFolderLastFileName", vm.sharedFolderLastFileName)
+            put("performancePreset", vm.performancePreset)
+            put("cpuModel", vm.cpuModel)
+            put("cpuFlags", vm.cpuFlags)
+            put("tcgCache", vm.tcgCache)
+            put("multiThreadedTcg", vm.multiThreadedTcg)
+            put("machineType", vm.machineType)
+            put("diskInterface", vm.diskInterface)
+            put("displayAdapter", vm.displayAdapter)
+            put("networkEnabled", vm.networkEnabled)
+            put("networkAdapter", vm.networkAdapter)
+            put("networkMode", vm.networkMode)
+            put("qemuParams", vm.qemuParams)
+            put("biosDate", vm.biosDate)
+            put("soundCard", vm.soundCard)
+            put("audioBackend", vm.audioBackend)
+        }
+
+    private fun jsonToVM(json: JSONObject): VMModel =
+        VMModel(
+            name = json.optString("name", "Virtual Machine"),
+            architecture = json.optString("architecture", "x86_64"),
+            ram = json.optString("ram", "1024 MB"),
+            cpuCores = json.optString("cpuCores", "1"),
+            diskImage = json.optString("diskImage", ""),
+            diskImageName = json.optString("diskImageName", ""),
+            isoImage = json.optString("isoImage", ""),
+            isoImageName = json.optString("isoImageName", ""),
+            driverIsoImage = json.optString("driverIsoImage", ""),
+            driverIsoImageName = json.optString("driverIsoImageName", ""),
+            sharedDiskImage = json.optString("sharedDiskImage", ""),
+            sharedDiskImageName = json.optString("sharedDiskImageName", ""),
+            sharedFolderEnabled = json.optBoolean("sharedFolderEnabled", false),
+            sharedFolderLastFileName =
+                json.optString("sharedFolderLastFileName", ""),
+            performancePreset = json.optString("performancePreset", "Balanced"),
+            cpuModel = json.optString("cpuModel", "Default"),
+            cpuFlags = json.optString("cpuFlags", ""),
+            tcgCache = json.optString("tcgCache", "256 MB"),
+            multiThreadedTcg = json.optBoolean("multiThreadedTcg", true),
+            machineType = json.optString("machineType", "pc"),
+            diskInterface =
+                json.optString("diskInterface", "AHCI").let {
+                    if (it == "VirtIO") "VirtIO Block" else it
+                },
+            displayAdapter = json.optString("displayAdapter", "Standard VGA"),
+            networkEnabled = json.optBoolean("networkEnabled", true),
+            networkAdapter =
+                json.optString("networkAdapter", "Realtek RTL8139"),
+            networkMode = json.optString("networkMode", "User (NAT)"),
+            qemuParams = json.optString("qemuParams", ""),
+            biosDate = json.optString("biosDate", "Default"),
+            soundCard = json.optString("soundCard", "Intel HDA"),
+            audioBackend = json.optString("audioBackend", "Default")
+        )
+
+    private fun saveVMLibrary(vms: List<VMModel>) {
+        val array = JSONArray()
+
+        vms.forEach { vm ->
+            array.put(vmToJson(vm))
+        }
+
+        getSharedPreferences("redbox_vm_library", MODE_PRIVATE)
+            .edit()
+            .putInt("storageVersion", 1)
+            .putString("vms_json", array.toString())
+            .apply()
+
+        Log.d(
+            "RedBoxStorage",
+            "v0.1.3 VM library saved: ${vms.size} VM(s)"
+        )
+    }
+
+    private fun loadVMLibrary(): List<VMModel> {
+        val preferences =
+            getSharedPreferences("redbox_vm_library", MODE_PRIVATE)
+
+        val raw = preferences.getString("vms_json", null)
+            ?: return emptyList()
+
+        return try {
+            val array = JSONArray(raw)
+            val result = mutableListOf<VMModel>()
+
+            for (index in 0 until array.length()) {
+                result.add(jsonToVM(array.getJSONObject(index)))
+            }
+
+            result
+        } catch (error: Throwable) {
+            Log.e(
+                "RedBoxStorage",
+                "Failed to read v0.1.3 VM library; legacy VM remains untouched",
+                error
+            )
+            emptyList()
+        }
     }
 
     /*
-     * Restore the saved VM when RedBox starts.
+     * Restore the VM used by the current UI.
+     *
+     * First try the new v0.1.3 library. If it does not exist yet, load the
+     * old v0.1.2 single-VM slot and copy that VM into the new library.
      */
     private fun loadSavedVM(): VMModel? {
+        val library = loadVMLibrary()
+
+        if (library.isNotEmpty()) {
+            return library.first().also {
+                Log.d(
+                    "RedBoxStorage",
+                    "VM restored from v0.1.3 library: ${it.name}"
+                )
+            }
+        }
+
+        val legacyVM = loadLegacyVM() ?: return null
+
+        saveVMLibrary(listOf(legacyVM))
+
+        Log.d(
+            "RedBoxStorage",
+            "Migrated legacy VM into v0.1.3 library: ${legacyVM.name}"
+        )
+
+        return legacyVM
+    }
+
+    private fun loadLegacyVM(): VMModel? {
         val preferences =
             getSharedPreferences("redbox_vm_storage", MODE_PRIVATE)
 
@@ -842,7 +1076,7 @@ class MainActivity : SDLActivity() {
                     ?: "Intel HDA",
             audioBackend = "Default"
         ).also {
-            Log.d("RedBoxStorage", "VM restored: ${it.name}")
+            Log.d("RedBoxStorage", "Legacy VM restored: ${it.name}")
         }
     }
 
@@ -1069,15 +1303,21 @@ class MainActivity : SDLActivity() {
 
         val qemuStatus = nativeQemuStatus()
         Log.d("RedBoxQEMU", qemuStatus)
+        RedBoxSupportLog.add("RedBox 0.1.3 started; native QEMU status: $qemuStatus")
 
-        val savedVM = loadSavedVM()
+        // Stage 5B: load/migrate first, then expose the complete VM library.
+        loadSavedVM()
+        val savedVMs = loadVMLibrary()
 
         setContent {
             RedBoxApp(
                 qemuStatus = qemuStatus,
-                initialVM = savedVM,
-                onVMSaved = { vm ->
-                    saveVM(vm)
+                initialVMs = savedVMs,
+                onVMLibrarySaved = { vms ->
+                    saveVMLibrary(vms)
+
+                    // Keep the old single-VM slot as a development fallback.
+                    vms.firstOrNull()?.let { saveLegacyVM(it) }
                 },
                 onStopQemu = {
                     val serviceMessenger = qemuServiceMessenger
@@ -1240,8 +1480,8 @@ class MainActivity : SDLActivity() {
 @Composable
 fun RedBoxApp(
     qemuStatus: String,
-    initialVM: VMModel?,
-    onVMSaved: (VMModel) -> Unit,
+    initialVMs: List<VMModel>,
+    onVMLibrarySaved: (List<VMModel>) -> Unit,
     onStopQemu: () -> Boolean,
     onStartQemu: ((VMModel, (String) -> Unit) -> Unit)
 ) {
@@ -1249,6 +1489,7 @@ fun RedBoxApp(
     var showEditVM by rememberSaveable { mutableStateOf(false) }
     var showVMDetails by rememberSaveable { mutableStateOf(false) }
     var showVMScreen by rememberSaveable { mutableStateOf(false) }
+    var showDeleteVMConfirmation by rememberSaveable { mutableStateOf(false) }
 
     var selectedTab by rememberSaveable {
         mutableIntStateOf(0)
@@ -1258,8 +1499,43 @@ fun RedBoxApp(
         mutableStateOf("All")
     }
 
-    var createdVM by remember {
-        mutableStateOf<VMModel?>(initialVM)
+    var savedVMs by remember {
+        mutableStateOf(initialVMs)
+    }
+
+    val context = LocalContext.current
+    val recentVmPreferences = remember {
+        context.getSharedPreferences("redbox_recent_vm", Context.MODE_PRIVATE)
+    }
+
+    var selectedVMIndex by rememberSaveable {
+        val storedIndex = recentVmPreferences.getInt("selected_vm_index", 0)
+        mutableIntStateOf(
+            if (initialVMs.isEmpty()) {
+                -1
+            } else {
+                storedIndex.coerceIn(initialVMs.indices)
+            }
+        )
+    }
+
+    fun rememberSelectedVM(index: Int) {
+        selectedVMIndex = index
+        recentVmPreferences
+            .edit()
+            .putInt("selected_vm_index", index)
+            .apply()
+    }
+
+    val selectedVM =
+        if (selectedVMIndex in savedVMs.indices) {
+            savedVMs[selectedVMIndex]
+        } else {
+            null
+        }
+
+    var runningVMIndex by rememberSaveable {
+        mutableIntStateOf(-1)
     }
 
     var isVMRunning by rememberSaveable {
@@ -1275,20 +1551,17 @@ fun RedBoxApp(
     }
 
     /*
-     * STEP 13B.2:
-     * Android system Back button should navigate inside RedBox instead of
-     * closing the app.
-     *
-     * Priority:
-     * Create VM -> Home
-     * Edit VM -> VM Details
-     * VM Screen -> VM Details
-     * VM Details -> previous app screen
-     * Other bottom tabs -> Home
-     * Home -> stay in RedBox
+     * Stage 5B:
+     * RedBox now keeps a real list of saved VMs. selectedVMIndex determines
+     * which VM is shown in Details/Edit/Files, while runningVMIndex tracks
+     * which library entry owns the active QEMU session.
      */
     BackHandler(enabled = true) {
         when {
+            showDeleteVMConfirmation -> {
+                showDeleteVMConfirmation = false
+            }
+
             showCreateVM -> {
                 showCreateVM = false
             }
@@ -1326,28 +1599,43 @@ fun RedBoxApp(
                 showCreateVM = false
             },
             onVMCreated = { vm ->
-                createdVM = vm
-                onVMSaved(vm)
+                val updatedLibrary = savedVMs + vm
+                savedVMs = updatedLibrary
+                rememberSelectedVM(updatedLibrary.lastIndex)
+                onVMLibrarySaved(updatedLibrary)
+
                 isVMRunning = false
+                runningVMIndex = -1
                 qemuRuntimeStatus = ""
                 showCreateVM = false
-                selectedTab = 0
+                selectedTab = 1
+
+                Log.d(
+                    "RedBoxStorage",
+                    "VM added to library: ${vm.name}; total=${updatedLibrary.size}"
+                )
             }
         )
         return
     }
 
-    if (showEditVM && createdVM != null) {
+    if (showEditVM && selectedVM != null) {
         EditVMScreen(
-            vm = createdVM!!,
+            vm = selectedVM,
             onBack = {
                 showEditVM = false
                 showVMDetails = true
             },
             onSave = { updatedVM ->
-                createdVM = updatedVM
-                onVMSaved(updatedVM)
+                if (selectedVMIndex in savedVMs.indices) {
+                    val updatedLibrary = savedVMs.toMutableList()
+                    updatedLibrary[selectedVMIndex] = updatedVM
+                    savedVMs = updatedLibrary
+                    onVMLibrarySaved(updatedLibrary)
+                }
+
                 isVMRunning = false
+                runningVMIndex = -1
                 qemuRuntimeStatus = ""
                 showEditVM = false
                 showVMDetails = true
@@ -1361,9 +1649,9 @@ fun RedBoxApp(
         return
     }
 
-    if (showVMScreen && createdVM != null) {
+    if (showVMScreen && selectedVM != null) {
         VMScreen(
-            vm = createdVM!!,
+            vm = selectedVM,
             onStop = {
                 qemuRuntimeStatus = "Stopping QEMU..."
                 val stopRequested = onStopQemu()
@@ -1383,11 +1671,17 @@ fun RedBoxApp(
         return
     }
 
-    if (showVMDetails && createdVM != null) {
+    if (showVMDetails && selectedVM != null) {
         VMDetailsScreen(
-            vm = createdVM!!,
-            isRunning = isVMRunning,
-            qemuRuntimeStatus = qemuRuntimeStatus,
+            vm = selectedVM,
+            isRunning =
+                isVMRunning && runningVMIndex == selectedVMIndex,
+            qemuRuntimeStatus =
+                if (runningVMIndex == selectedVMIndex) {
+                    qemuRuntimeStatus
+                } else {
+                    ""
+                },
             onEditVM = {
                 if (!isVMRunning) {
                     showVMDetails = false
@@ -1395,32 +1689,146 @@ fun RedBoxApp(
                 }
             },
             onStartVM = {
-                isVMRunning = true
-                showVMDetails = false
-                showVMScreen = true
-                qemuRuntimeStatus = "Starting QEMU..."
+                if (!isVMRunning) {
+                    val validationError =
+                        validateVMForStart(selectedVM)
 
-                onStartQemu(createdVM!!) { result ->
-                    qemuRuntimeStatus = result
-                    isVMRunning = false
+                    if (validationError != null) {
+                        qemuRuntimeStatus = validationError
+                        RedBoxSupportLog.add(
+                            "Validation blocked VM start: ${selectedVM.name} — $validationError"
+                        )
+                    } else {
+                        isVMRunning = true
+                        runningVMIndex = selectedVMIndex
+                        showVMDetails = false
+                        showVMScreen = true
+                        qemuRuntimeStatus = "Starting QEMU..."
 
-                    Log.d(
-                        "RedBoxQEMU",
-                        "Result returned to UI: $result"
-                    )
+                        RedBoxSupportLog.add(
+                            "Starting VM '${selectedVM.name}': arch=${selectedVM.architecture}, RAM=${selectedVM.ram}, cores=${selectedVM.cpuCores}, machine=${selectedVM.machineType}, diskInterface=${selectedVM.diskInterface}, display=${selectedVM.displayAdapter}, disk=${selectedVM.diskImageName.ifBlank { "none" }}, ISO=${selectedVM.isoImageName.ifBlank { "none" }}, customQemu=${selectedVM.qemuParams.isNotBlank()}"
+                        )
+
+                        onStartQemu(selectedVM) { result ->
+                        qemuRuntimeStatus = result
+                        isVMRunning = false
+                        runningVMIndex = -1
+
+                            RedBoxSupportLog.add(
+                                "VM '${selectedVM.name}' session result: $result"
+                            )
+
+                            Log.d(
+                                "RedBoxQEMU",
+                                "Result returned to UI: $result"
+                            )
+                        }
+                    }
                 }
             },
             onStopVM = {
                 qemuRuntimeStatus = "Stopping QEMU..."
+                RedBoxSupportLog.add("Stop requested for VM '${selectedVM.name}'")
 
                 if (!onStopQemu()) {
                     qemuRuntimeStatus = "QEMU stop request failed"
+                    RedBoxSupportLog.add("Stop request failed for VM '${selectedVM.name}'")
+                }
+            },
+            onDeleteVM = {
+                if (!isVMRunning) {
+                    showDeleteVMConfirmation = true
                 }
             },
             onBack = {
                 showVMDetails = false
             }
         )
+
+        if (showDeleteVMConfirmation) {
+            AlertDialog(
+                onDismissRequest = {
+                    showDeleteVMConfirmation = false
+                },
+                title = {
+                    Text("Delete virtual machine?")
+                },
+                text = {
+                    Text(
+                        "Remove \"${selectedVM.name}\" from RedBox? " +
+                            "Your disk images, ISO files, VHD/QCOW2/IMG files, " +
+                            "and other source files will not be deleted."
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            if (selectedVMIndex in savedVMs.indices &&
+                                !isVMRunning
+                            ) {
+                                val deletedName =
+                                    savedVMs[selectedVMIndex].name
+
+                                val updatedLibrary =
+                                    savedVMs.toMutableList().apply {
+                                        removeAt(selectedVMIndex)
+                                    }
+
+                                savedVMs = updatedLibrary
+                                onVMLibrarySaved(updatedLibrary)
+
+                                val nextSelectedIndex =
+                                    when {
+                                        updatedLibrary.isEmpty() -> -1
+                                        selectedVMIndex >= updatedLibrary.size ->
+                                            updatedLibrary.lastIndex
+                                        else -> selectedVMIndex
+                                    }
+
+                                selectedVMIndex = nextSelectedIndex
+
+                                if (nextSelectedIndex >= 0) {
+                                    recentVmPreferences
+                                        .edit()
+                                        .putInt("selected_vm_index", nextSelectedIndex)
+                                        .apply()
+                                } else {
+                                    recentVmPreferences
+                                        .edit()
+                                        .remove("selected_vm_index")
+                                        .apply()
+                                }
+
+                                showDeleteVMConfirmation = false
+                                showVMDetails = false
+                                selectedTab = 1
+                                qemuRuntimeStatus = ""
+
+                                Log.d(
+                                    "RedBoxStorage",
+                                    "VM removed from library only: $deletedName; remaining=${updatedLibrary.size}"
+                                )
+                            }
+                        }
+                    ) {
+                        Text(
+                            text = "Delete",
+                            color = Color(0xFFEF5350)
+                        )
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = {
+                            showDeleteVMConfirmation = false
+                        }
+                    ) {
+                        Text("Cancel")
+                    }
+                }
+            )
+        }
+
         return
     }
 
@@ -1441,14 +1849,20 @@ fun RedBoxApp(
             when (selectedTab) {
                 0 -> RedBoxHomeMaterial(
                     modifier = Modifier.padding(innerPadding),
-                    createdVM = createdVM,
-                    isRunning = isVMRunning,
+                    createdVM = selectedVM ?: savedVMs.firstOrNull(),
+                    isRunning =
+                        isVMRunning &&
+                            runningVMIndex ==
+                                (if (selectedVM != null) selectedVMIndex else 0),
                     qemuStatus = qemuStatus,
                     onCreateVM = {
                         showCreateVM = true
                     },
                     onVMClick = {
-                        if (createdVM != null) {
+                        if (savedVMs.isNotEmpty()) {
+                            if (selectedVMIndex !in savedVMs.indices) {
+                                rememberSelectedVM(0)
+                            }
                             showVMDetails = true
                         }
                     },
@@ -1463,13 +1877,15 @@ fun RedBoxApp(
 
                 1 -> RedBoxVMsMaterial(
                     modifier = Modifier.padding(innerPadding),
-                    createdVM = createdVM,
+                    savedVMs = savedVMs,
+                    runningVMIndex = runningVMIndex,
                     isRunning = isVMRunning,
                     onCreateVM = {
                         showCreateVM = true
                     },
-                    onVMClick = {
-                        if (createdVM != null) {
+                    onVMClick = { index ->
+                        if (index in savedVMs.indices) {
+                            rememberSelectedVM(index)
                             showVMDetails = true
                         }
                     }
@@ -1477,7 +1893,7 @@ fun RedBoxApp(
 
                 2 -> RedBoxFilesMaterial(
                     modifier = Modifier.padding(innerPadding),
-                    createdVM = createdVM,
+                    createdVM = selectedVM ?: savedVMs.firstOrNull(),
                     selectedFilter = selectedFileFilter,
                     onFilterChanged = { selectedFileFilter = it }
                 )
@@ -1651,7 +2067,7 @@ private fun RedBoxHomeMaterial(
                     MaterialTheme.colorScheme.surfaceVariant
             ) {
                 Text(
-                    text = "v0.1.2",
+                    text = "v0.1.3",
                     modifier = Modifier.padding(
                         horizontal = 11.dp,
                         vertical = 7.dp
@@ -1703,7 +2119,7 @@ private fun RedBoxHomeMaterial(
         Spacer(modifier = Modifier.height(26.dp))
 
         SectionHeader(
-            title = "Your VMs",
+            title = if (createdVM != null) "Recent VM" else "Your VMs",
             action =
                 if (createdVM != null) "See all" else null,
             onAction = onVmsClick
@@ -1909,7 +2325,7 @@ private fun VMHomeCard(
 
             Text(
                 text =
-                    "${vm.ram}  •  ${vm.cpuCores}",
+                    "${vm.ram}  •  ${vm.cpuCores} core${if (vm.cpuCores == "1") "" else "s"}  •  ${if (vm.machineType == "pc") "PC (i440FX)" else "Q35"}",
                 color =
                     MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 13.sp
@@ -1935,6 +2351,15 @@ private fun VMHomeCard(
                     MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 12.sp,
                 maxLines = 1
+            )
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            Text(
+                text = "Tap to open VM details  ›",
+                color = MaterialTheme.colorScheme.primary,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold
             )
         }
     }
@@ -2068,11 +2493,30 @@ private fun EngineCard(qemuStatus: String) {
 @Composable
 private fun RedBoxVMsMaterial(
     modifier: Modifier,
-    createdVM: VMModel?,
+    savedVMs: List<VMModel>,
+    runningVMIndex: Int,
     isRunning: Boolean,
     onCreateVM: () -> Unit,
-    onVMClick: () -> Unit
+    onVMClick: (Int) -> Unit
 ) {
+    var selectedFilter by rememberSaveable {
+        mutableStateOf("All")
+    }
+
+    val visibleVMs =
+        savedVMs.mapIndexed { index, vm -> index to vm }
+            .filter { (index, _) ->
+                when (selectedFilter) {
+                    "Running" ->
+                        isRunning && runningVMIndex == index
+
+                    "Stopped" ->
+                        !(isRunning && runningVMIndex == index)
+
+                    else -> true
+                }
+            }
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -2091,7 +2535,12 @@ private fun RedBoxVMsMaterial(
         Spacer(modifier = Modifier.height(5.dp))
 
         Text(
-            text = "Manage your virtual machines",
+            text =
+                if (savedVMs.size == 1) {
+                    "1 saved virtual machine"
+                } else {
+                    "${savedVMs.size} saved virtual machines"
+                },
             color =
                 MaterialTheme.colorScheme.onSurfaceVariant,
             fontSize = 14.sp
@@ -2104,34 +2553,109 @@ private fun RedBoxVMsMaterial(
                 Arrangement.spacedBy(8.dp)
         ) {
             FilterChip(
-                selected = true,
-                onClick = {},
+                selected = selectedFilter == "All",
+                onClick = {
+                    selectedFilter = "All"
+                },
                 label = { Text("All") }
             )
 
             FilterChip(
-                selected = false,
-                onClick = {},
+                selected = selectedFilter == "Running",
+                onClick = {
+                    selectedFilter = "Running"
+                },
                 label = { Text("Running") }
             )
 
             FilterChip(
-                selected = false,
-                onClick = {},
+                selected = selectedFilter == "Stopped",
+                onClick = {
+                    selectedFilter = "Stopped"
+                },
                 label = { Text("Stopped") }
             )
         }
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        if (createdVM == null) {
-            EmptyVMCard(onCreateVM)
-        } else {
-            VMHomeCard(
-                vm = createdVM,
-                isRunning = isRunning,
-                onClick = onVMClick
-            )
+        when {
+            savedVMs.isEmpty() -> {
+                EmptyVMCard(onCreateVM)
+            }
+
+            visibleVMs.isEmpty() -> {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor =
+                            MaterialTheme.colorScheme.surface
+                    )
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(22.dp),
+                        horizontalAlignment =
+                            Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text =
+                                if (selectedFilter == "Running") "▶"
+                                else "■",
+                            fontSize = 30.sp,
+                            color =
+                                MaterialTheme.colorScheme.primary
+                        )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Text(
+                            text =
+                                if (selectedFilter == "Running") {
+                                    "No running virtual machines"
+                                } else {
+                                    "No stopped virtual machines"
+                                },
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp
+                        )
+
+                        Spacer(modifier = Modifier.height(5.dp))
+
+                        Text(
+                            text =
+                                if (selectedFilter == "Running") {
+                                    "Start a VM and it will appear here."
+                                } else {
+                                    "All saved VMs are currently running."
+                                },
+                            color =
+                                MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 13.sp
+                        )
+                    }
+                }
+            }
+
+            else -> {
+                visibleVMs.forEachIndexed { visibleIndex, (originalIndex, vm) ->
+                    VMHomeCard(
+                        vm = vm,
+                        isRunning =
+                            isRunning &&
+                                runningVMIndex == originalIndex,
+                        onClick = {
+                            onVMClick(originalIndex)
+                        }
+                    )
+
+                    if (visibleIndex != visibleVMs.lastIndex) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                    }
+                }
+            }
         }
 
         Spacer(modifier = Modifier.height(18.dp))
@@ -2331,9 +2855,11 @@ private fun RedBoxSettingsMaterial(
 ) {
     val context = LocalContext.current
     var showAboutDialog by remember { mutableStateOf(false) }
+    var showWhatsNewDialog by remember { mutableStateOf(false) }
     var showUpdateDialog by remember { mutableStateOf(false) }
     var showStorageDialog by remember { mutableStateOf(false) }
     var showClearCacheDialog by remember { mutableStateOf(false) }
+    var showSupportLogDialog by remember { mutableStateOf(false) }
 
     if (showAboutDialog) {
         AlertDialog(
@@ -2341,7 +2867,8 @@ private fun RedBoxSettingsMaterial(
             title = { Text("About RedBox") },
             text = {
                 Text(
-                    "RedBox PC Emulator\nVersion 0.1.2\n\n" +
+                    "RedBox PC Emulator\nVersion 0.1.3\n\n" +
+                            "A QEMU-based PC emulator for Android.\n\n" +
                             "Run. Explore. Create."
                 )
             },
@@ -2353,13 +2880,95 @@ private fun RedBoxSettingsMaterial(
         )
     }
 
+    if (showWhatsNewDialog) {
+        AlertDialog(
+            onDismissRequest = { showWhatsNewDialog = false },
+            title = { Text("What's New in v0.1.3") },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .height(360.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    Text(
+                        text = "Multiple saved VMs",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp
+                    )
+                    Text(
+                        text = "Create, save, open, edit, start, and delete multiple virtual machines independently.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 13.sp
+                    )
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    Text(
+                        text = "Recent VM & VM filters",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp
+                    )
+                    Text(
+                        text = "Home remembers your recently selected VM, while All, Running, and Stopped filters make the VM library easier to manage.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 13.sp
+                    )
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    Text(
+                        text = "Improved VM configuration",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp
+                    )
+                    Text(
+                        text = "System, display, storage, disk interface, and advanced QEMU settings now include clearer descriptions and safer guidance.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 13.sp
+                    )
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    Text(
+                        text = "Better VM Details",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp
+                    )
+                    Text(
+                        text = "VM Details now gives a cleaner overview of configuration, storage and boot media, devices, performance, and VM status.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 13.sp
+                    )
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    Text(
+                        text = "Validation & Support Diagnostic Log",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp
+                    )
+                    Text(
+                        text = "RedBox checks essential VM settings before startup and can copy or share recent diagnostic events when reporting a problem.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 13.sp
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showWhatsNewDialog = false }) {
+                    Text("Done")
+                }
+            }
+        )
+    }
+
     if (showUpdateDialog) {
         AlertDialog(
             onDismissRequest = { showUpdateDialog = false },
             title = { Text("Check for Update") },
             text = {
                 Text(
-                    "Installed version: 0.1.0\n\n" +
+                    "Installed version: 0.1.3\n\n" +
                             "The update button is working. An online update source can be connected later when RedBox has a release page or update server."
                 )
             },
@@ -2384,6 +2993,81 @@ private fun RedBoxSettingsMaterial(
             confirmButton = {
                 TextButton(onClick = { showStorageDialog = false }) {
                     Text("OK")
+                }
+            }
+        )
+    }
+
+    if (showSupportLogDialog) {
+        val report = RedBoxSupportLog.buildReport()
+
+        AlertDialog(
+            onDismissRequest = { showSupportLogDialog = false },
+            title = { Text("Support Diagnostic Log") },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .height(360.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    Text(
+                        text = "Copy or share this log when reporting a RedBox problem. It contains app/device details and recent RedBox events, but is designed not to include full disk or ISO content URIs.",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(report, fontSize = 11.sp)
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_SUBJECT, "RedBox 0.1.3 Support Log")
+                            putExtra(Intent.EXTRA_TEXT, report)
+                        }
+                        context.startActivity(
+                            Intent.createChooser(shareIntent, "Share RedBox Support Log")
+                        )
+                    }
+                ) {
+                    Text("Share")
+                }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(
+                        onClick = {
+                            val clipboard =
+                                context.getSystemService(Context.CLIPBOARD_SERVICE)
+                                    as ClipboardManager
+                            clipboard.setPrimaryClip(
+                                ClipData.newPlainText("RedBox Support Log", report)
+                            )
+                            Toast.makeText(
+                                context,
+                                "Support log copied",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    ) {
+                        Text("Copy")
+                    }
+
+                    TextButton(
+                        onClick = {
+                            RedBoxSupportLog.clear()
+                            Toast.makeText(
+                                context,
+                                "Support log cleared",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                            showSupportLogDialog = false
+                        }
+                    ) {
+                        Text("Clear")
+                    }
                 }
             }
         )
@@ -2468,8 +3152,17 @@ private fun RedBoxSettingsMaterial(
             SettingsRow(
                 icon = "ⓘ",
                 title = "About RedBox",
-                subtitle = "RedBox PC Emulator",
+                subtitle = "RedBox PC Emulator • Version 0.1.3",
                 onClick = { showAboutDialog = true }
+            )
+
+            SettingsDivider()
+
+            SettingsRow(
+                icon = "★",
+                title = "What's New",
+                subtitle = "See what's new in version 0.1.3",
+                onClick = { showWhatsNewDialog = true }
             )
 
             SettingsDivider()
@@ -2477,7 +3170,7 @@ private fun RedBoxSettingsMaterial(
             SettingsRow(
                 icon = "↻",
                 title = "Check for Update",
-                subtitle = "Version 0.1.2",
+                subtitle = "Version 0.1.3",
                 onClick = { showUpdateDialog = true }
             )
 
@@ -2488,6 +3181,15 @@ private fun RedBoxSettingsMaterial(
                 title = "Storage Location",
                 subtitle = "Internal Storage",
                 onClick = { showStorageDialog = true }
+            )
+
+            SettingsDivider()
+
+            SettingsRow(
+                icon = "≡",
+                title = "Support Diagnostic Log",
+                subtitle = "Copy or share recent RedBox events",
+                onClick = { showSupportLogDialog = true }
             )
 
             SettingsDivider()
@@ -2528,7 +3230,7 @@ private fun RedBoxSettingsMaterial(
                     )
 
                     Text(
-                        text = "Version 0.1.2",
+                        text = "Version 0.1.3",
                         color =
                             MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 12.sp
@@ -2659,6 +3361,28 @@ private fun RedBoxLogo(
     )
 }
 
+private fun validateVMForStart(vm: VMModel): String? {
+    if (vm.name.trim().isEmpty()) {
+        return "VM name is required."
+    }
+
+    val ramMb = vm.ram.filter { it.isDigit() }.toIntOrNull()
+    if (ramMb == null || ramMb <= 0) {
+        return "Select a valid RAM amount before starting the VM."
+    }
+
+    val cores = vm.cpuCores.filter { it.isDigit() }.toIntOrNull()
+    if (cores == null || cores <= 0) {
+        return "Select a valid CPU core count before starting the VM."
+    }
+
+    if (vm.diskImage.isBlank() && vm.isoImage.isBlank()) {
+        return "Select a disk image or ISO image before starting the VM."
+    }
+
+    return null
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun VMDetailsScreen(
@@ -2668,6 +3392,7 @@ private fun VMDetailsScreen(
     onEditVM: () -> Unit,
     onStartVM: () -> Unit,
     onStopVM: () -> Unit,
+    onDeleteVM: () -> Unit,
     onBack: () -> Unit
 ) {
     RedBoxMaterialTheme(darkTheme = true) {
@@ -2717,9 +3442,7 @@ private fun VMDetailsScreen(
                         containerColor = MaterialTheme.colorScheme.surface
                     )
                 ) {
-                    Column(
-                        modifier = Modifier.padding(20.dp)
-                    ) {
+                    Column(modifier = Modifier.padding(20.dp)) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -2739,9 +3462,7 @@ private fun VMDetailsScreen(
 
                             Spacer(modifier = Modifier.width(14.dp))
 
-                            Column(
-                                modifier = Modifier.weight(1f)
-                            ) {
+                            Column(modifier = Modifier.weight(1f)) {
                                 Text(
                                     text = vm.name,
                                     fontSize = 21.sp,
@@ -2749,9 +3470,9 @@ private fun VMDetailsScreen(
                                 )
                                 Spacer(modifier = Modifier.height(3.dp))
                                 Text(
-                                    text = vm.architecture,
+                                    text = "${vm.architecture}  •  ${vm.ram}  •  ${vm.cpuCores} core${if (vm.cpuCores == "1") "" else "s"}",
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    fontSize = 13.sp
+                                    fontSize = 12.sp
                                 )
                             }
 
@@ -2779,13 +3500,30 @@ private fun VMDetailsScreen(
                                 )
                             }
                         }
+
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        Text(
+                            text = when {
+                                vm.diskImageName.isNotBlank() && vm.isoImageName.isNotBlank() ->
+                                    "Disk and installation media are ready."
+                                vm.diskImageName.isNotBlank() ->
+                                    "Disk image selected. No primary ISO attached."
+                                vm.isoImageName.isNotBlank() ->
+                                    "Installation media selected. No disk image attached."
+                                else ->
+                                    "No boot storage or installation media selected."
+                            },
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 12.sp
+                        )
                     }
                 }
 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(18.dp))
 
                 Text(
-                    text = "System",
+                    text = "Configuration",
                     fontSize = 20.sp,
                     fontWeight = FontWeight.Bold
                 )
@@ -2801,15 +3539,6 @@ private fun VMDetailsScreen(
                 ) {
                     Column(modifier = Modifier.padding(18.dp)) {
                         DetailRowMaterial(
-                            icon = "▣",
-                            title = "Architecture",
-                            value = vm.architecture
-                        )
-                        HorizontalDivider(
-                            modifier = Modifier.padding(vertical = 13.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant
-                        )
-                        DetailRowMaterial(
                             icon = "▤",
                             title = "Memory",
                             value = vm.ram
@@ -2819,62 +3548,9 @@ private fun VMDetailsScreen(
                             color = MaterialTheme.colorScheme.surfaceVariant
                         )
                         DetailRowMaterial(
-                            icon = "⚙",
-                            title = "CPU Cores",
-                            value = vm.cpuCores
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(18.dp))
-
-                Text(
-                    text = "CPU Performance",
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
-
-                Spacer(modifier = Modifier.height(9.dp))
-
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surface
-                    )
-                ) {
-                    Column(modifier = Modifier.padding(18.dp)) {
-                        DetailRowMaterial(
-                            icon = "◈",
-                            title = "Preset",
-                            value = vm.performancePreset
-                        )
-                        HorizontalDivider(
-                            modifier = Modifier.padding(vertical = 13.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant
-                        )
-                        DetailRowMaterial(
                             icon = "C",
-                            title = "CPU Model",
-                            value = vm.cpuModel
-                        )
-                        HorizontalDivider(
-                            modifier = Modifier.padding(vertical = 13.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant
-                        )
-                        DetailRowMaterial(
-                            icon = "T",
-                            title = "TCG Cache",
-                            value = vm.tcgCache
-                        )
-                        HorizontalDivider(
-                            modifier = Modifier.padding(vertical = 13.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant
-                        )
-                        DetailRowMaterial(
-                            icon = "≡",
-                            title = "Multi-threaded TCG",
-                            value = if (vm.multiThreadedTcg) "Enabled" else "Disabled"
+                            title = "Processor",
+                            value = "${vm.cpuCores} core${if (vm.cpuCores == "1") "" else "s"} • ${vm.cpuModel}"
                         )
                         HorizontalDivider(
                             modifier = Modifier.padding(vertical = 13.dp),
@@ -2882,7 +3558,7 @@ private fun VMDetailsScreen(
                         )
                         DetailRowMaterial(
                             icon = "M",
-                            title = "Machine Type",
+                            title = "Machine",
                             value = if (vm.machineType == "pc") "PC (i440FX)" else "Q35"
                         )
                         HorizontalDivider(
@@ -2890,17 +3566,8 @@ private fun VMDetailsScreen(
                             color = MaterialTheme.colorScheme.surfaceVariant
                         )
                         DetailRowMaterial(
-                            icon = "D",
-                            title = "Disk Interface",
-                            value = vm.diskInterface
-                        )
-                        HorizontalDivider(
-                            modifier = Modifier.padding(vertical = 13.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant
-                        )
-                        DetailRowMaterial(
                             icon = "G",
-                            title = "Display Adapter",
+                            title = "Display",
                             value = vm.displayAdapter
                         )
                     }
@@ -2909,7 +3576,7 @@ private fun VMDetailsScreen(
                 Spacer(modifier = Modifier.height(18.dp))
 
                 Text(
-                    text = "Storage",
+                    text = "Storage & Boot Media",
                     fontSize = 20.sp,
                     fontWeight = FontWeight.Bold
                 )
@@ -2927,9 +3594,7 @@ private fun VMDetailsScreen(
                         StorageRowMaterial(
                             icon = "□",
                             title = "Disk Image",
-                            value = vm.diskImageName.ifEmpty {
-                                "No disk image selected"
-                            }
+                            value = vm.diskImageName.ifBlank { "Not selected" }
                         )
 
                         HorizontalDivider(
@@ -2939,15 +3604,112 @@ private fun VMDetailsScreen(
 
                         StorageRowMaterial(
                             icon = "◉",
-                            title = "ISO Image",
-                            value = vm.isoImageName.ifEmpty {
-                                "No ISO image selected"
-                            }
+                            title = "Primary ISO",
+                            value = vm.isoImageName.ifBlank { "Not selected" }
+                        )
+
+                        HorizontalDivider(
+                            modifier = Modifier.padding(vertical = 13.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant
+                        )
+
+                        StorageRowMaterial(
+                            icon = "◌",
+                            title = "Driver ISO",
+                            value = vm.driverIsoImageName.ifBlank { "Not selected" }
+                        )
+
+                        HorizontalDivider(
+                            modifier = Modifier.padding(vertical = 13.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant
+                        )
+
+                        StorageRowMaterial(
+                            icon = "▱",
+                            title = "Shared Hard Drive",
+                            value = vm.sharedDiskImageName.ifBlank { "Not selected" }
+                        )
+
+                        HorizontalDivider(
+                            modifier = Modifier.padding(vertical = 13.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant
+                        )
+
+                        DetailRowMaterial(
+                            icon = "D",
+                            title = "Disk Interface",
+                            value = vm.diskInterface
                         )
                     }
                 }
 
-                if (qemuRuntimeStatus.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(18.dp))
+
+                Text(
+                    text = "Devices & Performance",
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold
+                )
+
+                Spacer(modifier = Modifier.height(9.dp))
+
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surface
+                    )
+                ) {
+                    Column(modifier = Modifier.padding(18.dp)) {
+                        DetailRowMaterial(
+                            icon = "◈",
+                            title = "Performance",
+                            value = "${vm.performancePreset} • ${vm.tcgCache}"
+                        )
+                        HorizontalDivider(
+                            modifier = Modifier.padding(vertical = 13.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant
+                        )
+                        DetailRowMaterial(
+                            icon = "T",
+                            title = "Multi-threaded TCG",
+                            value = if (vm.multiThreadedTcg) "Enabled" else "Disabled"
+                        )
+                        HorizontalDivider(
+                            modifier = Modifier.padding(vertical = 13.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant
+                        )
+                        DetailRowMaterial(
+                            icon = "N",
+                            title = "Network",
+                            value = if (vm.networkEnabled) {
+                                "${vm.networkAdapter} • ${vm.networkMode}"
+                            } else {
+                                "Disabled"
+                            }
+                        )
+                        HorizontalDivider(
+                            modifier = Modifier.padding(vertical = 13.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant
+                        )
+                        DetailRowMaterial(
+                            icon = "♪",
+                            title = "Sound",
+                            value = vm.soundCard
+                        )
+                        HorizontalDivider(
+                            modifier = Modifier.padding(vertical = 13.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant
+                        )
+                        DetailRowMaterial(
+                            icon = "A",
+                            title = "Custom QEMU Parameters",
+                            value = if (vm.qemuParams.isBlank()) "None" else "Active"
+                        )
+                    }
+                }
+
+                if (qemuRuntimeStatus.isNotBlank()) {
                     Spacer(modifier = Modifier.height(18.dp))
 
                     Card(
@@ -2959,7 +3721,7 @@ private fun VMDetailsScreen(
                     ) {
                         Column(modifier = Modifier.padding(18.dp)) {
                             Text(
-                                text = "QEMU Engine",
+                                text = if (isRunning) "QEMU Engine" else "VM Status",
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 15.sp,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer
@@ -2986,6 +3748,29 @@ private fun VMDetailsScreen(
                 ) {
                     Text(
                         text = if (isRunning) "Edit VM (stop VM first)" else "✎  Edit VM",
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                OutlinedButton(
+                    onClick = onDeleteVM,
+                    enabled = !isRunning,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(52.dp),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = Color(0xFFEF5350)
+                    )
+                ) {
+                    Text(
+                        text = if (isRunning) {
+                            "Delete VM (stop VM first)"
+                        } else {
+                            "Delete VM"
+                        },
                         fontWeight = FontWeight.SemiBold
                     )
                 }
@@ -3030,6 +3815,7 @@ private fun VMDetailsScreen(
         }
     }
 }
+
 
 @Composable
 private fun SettingsGroupTitle(
@@ -3344,6 +4130,20 @@ private fun EditVMScreen(
                         }
                     }
 
+                    Text(
+                        text = when (cpuModel) {
+                            "qemu64" -> "QEMU's generic 64-bit x86 CPU model for broad guest compatibility."
+                            "core2duo" -> "Emulates an older Intel Core 2 Duo-class CPU for legacy operating systems."
+                            "Nehalem" -> "Emulates an Intel Nehalem-generation CPU."
+                            "SandyBridge" -> "Emulates an Intel Sandy Bridge-generation CPU."
+                            "Haswell" -> "Emulates an Intel Haswell-generation CPU."
+                            "max" -> "Exposes a broad set of CPU features supported by QEMU's emulation."
+                            else -> "Uses RedBox's default CPU model selection."
+                        },
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 12.sp
+                    )
+
                     Text("CPU Flags", fontWeight = FontWeight.SemiBold)
                     Text(
                         "Optional CPU features. Default CPU Model becomes qemu64 when flags are enabled.",
@@ -3477,6 +4277,15 @@ private fun EditVMScreen(
                             performancePreset = "Custom"
                         },
                         label = { Text("Q35") }
+                    )
+                    Text(
+                        text = if (machineType == "q35") {
+                            "Q35 emulates a newer Intel chipset and is generally suited to newer guest operating systems."
+                        } else {
+                            "PC (i440FX) emulates the classic QEMU PC chipset and is useful for broad and older guest compatibility."
+                        },
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 12.sp
                     )
                 }
             },
@@ -3697,10 +4506,17 @@ private fun EditVMScreen(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text("CPU", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                            Spacer(modifier = Modifier.height(3.dp))
                             Text(
-                                "$cpuCores Cores · $cpuModel · $performancePreset",
+                                "$cpuCores Cores · $cpuModel",
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                fontSize = 12.sp
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Text(
+                                "$performancePreset preset · ${if (multiThreadedTcg) "Multi-threaded TCG" else "Single-threaded TCG"}",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 11.sp
                             )
                         }
                         Text("›", fontSize = 30.sp)
@@ -3726,10 +4542,17 @@ private fun EditVMScreen(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text("RAM", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                            Spacer(modifier = Modifier.height(3.dp))
                             Text(
                                 ram,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                fontSize = 12.sp
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Text(
+                                "Guest memory allocation",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 11.sp
                             )
                         }
                         Text("›", fontSize = 30.sp)
@@ -3755,10 +4578,21 @@ private fun EditVMScreen(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text("Machine", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                            Spacer(modifier = Modifier.height(3.dp))
                             Text(
                                 if (machineType == "pc") "PC (i440FX)" else "Q35",
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                fontSize = 12.sp
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Text(
+                                if (machineType == "pc") {
+                                    "Classic chipset · broad legacy compatibility"
+                                } else {
+                                    "Modern chipset · newer guest operating systems"
+                                },
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 11.sp
                             )
                         }
                         Text("›", fontSize = 30.sp)
@@ -3776,43 +4610,66 @@ private fun EditVMScreen(
                 Spacer(modifier = Modifier.height(8.dp))
 
                 Text(
-                    text = when (displayAdapter) {
-                        "Bochs Display" -> "Modern software framebuffer. Worth testing for better desktop responsiveness."
-                        "VirtIO VGA" -> "Paravirtualized graphics. Guest driver support may be required."
-                        "Cirrus VGA" -> "Legacy graphics adapter for older operating systems."
-                        else -> "Standard VGA is the safest compatibility option."
-                    },
+                    text = "Choose the virtual graphics adapter presented to the guest operating system.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 12.sp
                 )
 
                 Spacer(modifier = Modifier.height(10.dp))
 
-                Column(
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surface
+                    )
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp)
+                    ) {
+                        Text(
+                            text = displayAdapter,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+
+                        Spacer(modifier = Modifier.height(4.dp))
+
+                        Text(
+                            text = when (displayAdapter) {
+                                "Bochs Display" ->
+                                    "Modern software framebuffer. Useful to test for smoother desktop display behavior when the guest supports it."
+                                "VirtIO VGA" ->
+                                    "Paravirtualized graphics adapter. It can reduce emulated-device overhead, but guest driver support may be required."
+                                "Cirrus VGA" ->
+                                    "Legacy graphics adapter intended mainly for older guest operating systems that work better with older virtual hardware."
+                                else ->
+                                    "Standard VGA provides broad compatibility and is a good fallback when another display adapter causes guest display problems."
+                            },
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 12.sp
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        listOf("Standard VGA", "Bochs Display").forEach { option ->
-                            FilterChip(
-                                selected = displayAdapter == option,
-                                onClick = { displayAdapter = option },
-                                label = { Text(option) }
-                            )
-                        }
-                    }
-
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        listOf("VirtIO VGA", "Cirrus VGA").forEach { option ->
-                            FilterChip(
-                                selected = displayAdapter == option,
-                                onClick = { displayAdapter = option },
-                                label = { Text(option) }
-                            )
-                        }
+                    listOf(
+                        "Standard VGA",
+                        "Bochs Display",
+                        "VirtIO VGA",
+                        "Cirrus VGA"
+                    ).forEach { option ->
+                        FilterChip(
+                            selected = displayAdapter == option,
+                            onClick = { displayAdapter = option },
+                            label = { Text(option) }
+                        )
                     }
                 }
 
@@ -3874,9 +4731,9 @@ private fun EditVMScreen(
 
                 Text(
                     text = when (diskInterface) {
-                        "IDE" -> "IDE uses PC (i440FX) machine mode for compatibility."
-                        "VirtIO Block" -> "VirtIO Block can reduce disk emulation overhead, but Windows needs a VirtIO storage driver before it can boot from this disk mode."
-                        else -> "AHCI provides SATA-style disk compatibility for supported guests."
+                        "IDE" -> "IDE is the legacy compatibility option. RedBox automatically uses PC (i440FX) machine mode with IDE. This can be useful for older guest operating systems."
+                        "VirtIO Block" -> "VirtIO Block reduces emulated storage-device overhead, but the guest must have a VirtIO storage driver. Windows may fail to detect or boot from the disk until the driver is installed."
+                        else -> "AHCI connects the virtual disk as a SATA-style device. It is a good general choice for guest operating systems with AHCI/SATA support."
                     },
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 12.sp
@@ -3907,14 +4764,36 @@ private fun EditVMScreen(
                             fontWeight = FontWeight.Bold
                         )
 
-                        Spacer(modifier = Modifier.height(5.dp))
+                        Spacer(modifier = Modifier.height(3.dp))
 
                         Text(
-                            text = diskImageName.ifEmpty { "No disk image selected" },
+                            text = "Primary virtual hard disk used by this VM.",
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontSize = 12.sp,
-                            maxLines = 2
+                            fontSize = 11.sp
                         )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(14.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Text(
+                                    text = if (diskImageName.isEmpty()) "Not selected" else "Selected file",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = diskImageName.ifEmpty { "No disk image selected" },
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    maxLines = 2
+                                )
+                            }
+                        }
 
                         Spacer(modifier = Modifier.height(10.dp))
 
@@ -3963,14 +4842,36 @@ private fun EditVMScreen(
                             fontWeight = FontWeight.Bold
                         )
 
-                        Spacer(modifier = Modifier.height(5.dp))
+                        Spacer(modifier = Modifier.height(3.dp))
 
                         Text(
-                            text = isoImageName.ifEmpty { "No ISO image selected" },
+                            text = "Optional CD/DVD image for installing or booting a guest operating system.",
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontSize = 12.sp,
-                            maxLines = 2
+                            fontSize = 11.sp
                         )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(14.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Text(
+                                    text = if (isoImageName.isEmpty()) "Not selected" else "Selected file",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = isoImageName.ifEmpty { "No ISO image selected" },
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    maxLines = 2
+                                )
+                            }
+                        }
 
                         Spacer(modifier = Modifier.height(10.dp))
 
@@ -4010,14 +4911,36 @@ private fun EditVMScreen(
                             fontWeight = FontWeight.Bold
                         )
 
-                        Spacer(modifier = Modifier.height(5.dp))
+                        Spacer(modifier = Modifier.height(3.dp))
 
                         Text(
-                            text = driverIsoImageName.ifEmpty { "No driver ISO selected" },
+                            text = "Optional second CD/DVD image, useful for guest drivers such as VirtIO.",
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontSize = 12.sp,
-                            maxLines = 2
+                            fontSize = 11.sp
                         )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(14.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Text(
+                                    text = if (driverIsoImageName.isEmpty()) "Not selected" else "Selected file",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = driverIsoImageName.ifEmpty { "No driver ISO selected" },
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    maxLines = 2
+                                )
+                            }
+                        }
 
                         Spacer(modifier = Modifier.height(10.dp))
 
@@ -4063,14 +4986,36 @@ private fun EditVMScreen(
                             fontWeight = FontWeight.Bold
                         )
 
-                        Spacer(modifier = Modifier.height(5.dp))
+                        Spacer(modifier = Modifier.height(3.dp))
 
                         Text(
-                            text = sharedDiskImageName.ifEmpty { "No shared drive selected" },
+                            text = "Attach an additional disk image for exchanging files or extra guest storage.",
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontSize = 12.sp,
-                            maxLines = 2
+                            fontSize = 11.sp
                         )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(14.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Text(
+                                    text = if (sharedDiskImageName.isEmpty()) "Not selected" else "Selected file",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = sharedDiskImageName.ifEmpty { "No shared drive selected" },
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    maxLines = 2
+                                )
+                            }
+                        }
 
                         Spacer(modifier = Modifier.height(10.dp))
 
@@ -4219,10 +5164,17 @@ private fun EditVMScreen(
 
                             Spacer(modifier = Modifier.height(8.dp))
 
-                            Row(
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            FlowRow(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                listOf("Intel E1000", "Intel E1000E", "Realtek RTL8139", "AMD PCnet").forEach { option ->
+                                listOf(
+                                    "Intel E1000",
+                                    "Intel E1000E",
+                                    "Realtek RTL8139",
+                                    "AMD PCnet"
+                                ).forEach { option ->
                                     FilterChip(
                                         selected = networkAdapter == option,
                                         onClick = { networkAdapter = option },
@@ -4278,14 +5230,21 @@ private fun EditVMScreen(
                         Text(text = "Sound Card", fontWeight = FontWeight.Bold)
                         Spacer(modifier = Modifier.height(8.dp))
 
-                        listOf("Intel HDA", "AC97", "Sound Blaster 16").forEach { option ->
-                            FilterChip(
-                                selected = soundCard == option,
-                                onClick = { soundCard = option },
-                                label = { Text(option) }
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            listOf("Intel HDA", "AC97", "Sound Blaster 16").forEach { option ->
+                                FilterChip(
+                                    selected = soundCard == option,
+                                    onClick = { soundCard = option },
+                                    label = { Text(option) }
+                                )
+                            }
                         }
+
+                        Spacer(modifier = Modifier.height(8.dp))
 
                         Text(
                             text = when (soundCard) {
@@ -4393,10 +5352,32 @@ private fun EditVMScreen(
                         Spacer(modifier = Modifier.height(5.dp))
 
                         Text(
-                            text = "Optional extra QEMU command-line parameters. Leave empty for normal RedBox settings.",
+                            text = "Advanced option for adding extra QEMU command-line parameters. Leave this empty unless you know the parameter you need.",
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             fontSize = 12.sp
                         )
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(14.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Text(
+                                    text = "Use with care",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp
+                                )
+                                Spacer(modifier = Modifier.height(3.dp))
+                                Text(
+                                    text = "Extra parameters are passed to QEMU in addition to RedBox's generated VM configuration. Invalid, duplicate, or conflicting options can prevent the VM from starting or change normal RedBox behavior.",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontSize = 11.sp
+                                )
+                            }
+                        }
 
                         Spacer(modifier = Modifier.height(10.dp))
 
@@ -4404,18 +5385,31 @@ private fun EditVMScreen(
                             value = qemuParams,
                             onValueChange = { qemuParams = it },
                             modifier = Modifier.fillMaxWidth(),
+                            label = { Text("Extra QEMU parameters") },
                             placeholder = { Text("-rtc base=localtime") },
+                            supportingText = {
+                                Text(
+                                    if (qemuParams.isBlank()) {
+                                        "No custom parameters — RedBox will use its normal generated configuration."
+                                    } else {
+                                        "Custom parameters are active for this VM."
+                                    }
+                                )
+                            },
                             minLines = 2,
                             maxLines = 5
                         )
 
-                        Spacer(modifier = Modifier.height(8.dp))
+                        if (qemuParams.isNotBlank()) {
+                            Spacer(modifier = Modifier.height(8.dp))
 
-                        Text(
-                            text = "Invalid or conflicting parameters can stop a VM from starting.",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontSize = 12.sp
-                        )
+                            TextButton(
+                                onClick = { qemuParams = "" },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Clear Custom Parameters")
+                            }
+                        }
                     }
                 }
 
