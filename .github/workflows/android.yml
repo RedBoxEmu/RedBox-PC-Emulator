@@ -1,4 +1,4 @@
-name: Android CI
+name: Debug build
 
 on:
   push:
@@ -8,7 +8,7 @@ on:
 
 jobs:
   build:
-    name: Build for Android
+    name: Build for Android (debug)
     runs-on: ubuntu-latest
 
     steps:
@@ -30,7 +30,7 @@ jobs:
       - name: Build debug APK
         run: ./gradlew :app:assembleDebug
 
-      - name: Upload to artifacts
+      - name: Upload debug APK to artifacts
         uses: actions/upload-artifact@v4
         with:
           name: android-debug
