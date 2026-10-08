@@ -13,8 +13,8 @@ android {
         applicationId = "com.rimvydop.redboxpcemulator"
         minSdk = 26
         targetSdk = 37
-        versionCode = 4
-        versionName = "0.1.3"
+        versionCode = 8
+        versionName = "0.2.1"
 
         ndk {
             abiFilters.add("arm64-v8a")
@@ -65,6 +65,9 @@ android {
 }
 
 dependencies {
+    val billingVersion = "9.1.0"
+    implementation("com.android.billingclient:billing:$billingVersion")
+
     implementation("androidx.appcompat:appcompat:1.7.1")
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.activity.compose)

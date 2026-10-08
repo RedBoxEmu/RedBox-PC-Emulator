@@ -69,12 +69,15 @@ class QemuService : Service() {
         machineType: String,
         diskInterface: String,
         displayAdapter: String,
+        threeDAcceleration: Boolean,
         networkEnabled: Boolean,
         networkAdapter: String,
         networkMode: String,
         qemuParams: String,
         biosDate: String,
-        soundCard: String
+        soundCard: String,
+        bootPriority: String,
+        firmwareMode: String
     ): String
 
     private external fun nativeQemuStop(): Boolean
@@ -279,10 +282,60 @@ class QemuService : Service() {
                                         "Intel HDA"
                                     )
 
+                                val bootPriority =
+                                    data.getString(
+                                        "boot_priority",
+                                        "Hard Disk First"
+                                    )
+
+                                val firmwareMode =
+                                    data.getString(
+                                        "firmware_mode",
+                                        "Legacy BIOS"
+                                    )
+
+                                val threeDAcceleration =
+                                    data.getBoolean(
+                                        "three_d_acceleration",
+                                        false
+                                    ) && displayAdapter == "VirtIO VGA"
+
+                                val highPriority =
+                                    data.getBoolean(
+                                        "high_priority",
+                                        false
+                                    )
+
+                                try {
+                                    android.os.Process.setThreadPriority(
+                                        if (highPriority)
+                                            android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY
+                                        else
+                                            android.os.Process.THREAD_PRIORITY_DEFAULT
+                                    )
+                                    Log.i(
+                                        TAG,
+                                        "QEMU worker priority: ${if (highPriority) "HIGH" else "DEFAULT"}; nice=${android.os.Process.getThreadPriority(android.os.Process.myTid())}"
+                                    )
+                                } catch (error: Throwable) {
+                                    Log.w(
+                                        TAG,
+                                        "Could not change QEMU worker thread priority; continuing normally",
+                                        error
+                                    )
+                                }
+
+                                Log.i(
+                                    TAG,
+                                    "Launch config: RAM=${ramMb}MB, cores=$cpuCores, cpu=$cpuModel, machine=$machineType, disk=$diskInterface, display=$displayAdapter, 3D=$threeDAcceleration, network=$networkEnabled, sound=$soundCard, boot=$bootPriority, firmware=$firmwareMode, highPriority=$highPriority, MTTCG=$multiThreadedTcg, TCG=${tcgCacheMb}MB"
+                                )
+
                                 Log.d(
                                     TAG,
                                     "Calling nativeQemuStart() in PID=${android.os.Process.myPid()}"
                                 )
+
+                                val nativeStartTimeMs = android.os.SystemClock.elapsedRealtime()
 
                                 val result =
                                     nativeQemuStart(
@@ -302,17 +355,23 @@ class QemuService : Service() {
                                         machineType,
                                         diskInterface,
                                         displayAdapter,
+                                        threeDAcceleration,
                                         networkEnabled,
                                         networkAdapter,
                                         networkMode,
                                         qemuParams,
                                         biosDate,
-                                        soundCard
+                                        soundCard,
+                                        bootPriority,
+                                        firmwareMode
                                     )
 
-                                Log.d(
+                                val nativeRunTimeMs =
+                                    android.os.SystemClock.elapsedRealtime() - nativeStartTimeMs
+
+                                Log.i(
                                     TAG,
-                                    "nativeQemuStart() returned: $result"
+                                    "nativeQemuStart() returned after ${nativeRunTimeMs}ms: $result"
                                 )
 
                                 sendStatus(

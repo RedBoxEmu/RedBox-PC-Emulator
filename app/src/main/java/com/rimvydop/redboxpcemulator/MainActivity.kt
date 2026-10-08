@@ -20,6 +20,7 @@ import android.os.RemoteException
 import android.system.Os
 import android.util.Log
 import android.widget.Toast
+import android.graphics.BitmapFactory
 import android.content.ClipData
 import android.content.ClipboardManager
 import java.text.SimpleDateFormat
@@ -39,6 +40,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
@@ -50,12 +52,14 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
@@ -75,6 +79,7 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.material3.Typography
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -84,12 +89,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.Executors
@@ -97,6 +106,16 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicBoolean
 import org.json.JSONArray
 import org.json.JSONObject
+import com.android.billingclient.api.BillingClient
+import com.android.billingclient.api.BillingClientStateListener
+import com.android.billingclient.api.BillingFlowParams
+import com.android.billingclient.api.BillingResult
+import com.android.billingclient.api.ConsumeParams
+import com.android.billingclient.api.ProductDetails
+import com.android.billingclient.api.Purchase
+import com.android.billingclient.api.PurchasesUpdatedListener
+import com.android.billingclient.api.QueryProductDetailsParams
+import com.android.billingclient.api.PendingPurchasesParams
 
 private object RedBoxSupportLog {
     private const val MAX_ENTRIES = 250
@@ -138,7 +157,7 @@ private object RedBoxSupportLog {
 
         return buildString {
             appendLine("RedBox PC Emulator Support Log")
-            appendLine("App version: 0.1.3")
+            appendLine("App version: 0.2.1")
             appendLine("Android: ${android.os.Build.VERSION.RELEASE} (API ${android.os.Build.VERSION.SDK_INT})")
             appendLine("Device: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
             appendLine("ABI: ${android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown"}")
@@ -151,6 +170,31 @@ private object RedBoxSupportLog {
 }
 
 class MainActivity : SDLActivity() {
+
+    private val donateProductId = "donate_4_99"
+    private var billingClient: BillingClient? = null
+    private var donateProductDetails: ProductDetails? = null
+
+    private val purchasesUpdatedListener = PurchasesUpdatedListener { billingResult, purchases ->
+        when (billingResult.responseCode) {
+            BillingClient.BillingResponseCode.OK -> {
+                purchases.orEmpty().forEach { purchase ->
+                    if (purchase.products.contains(donateProductId) &&
+                        purchase.purchaseState == Purchase.PurchaseState.PURCHASED
+                    ) {
+                        consumeDonationPurchase(purchase)
+                    }
+                }
+            }
+            BillingClient.BillingResponseCode.USER_CANCELED -> {
+                Log.d("RedBoxBilling", "Donation purchase canceled")
+            }
+            else -> {
+                Log.e("RedBoxBilling", "Purchase update failed: ${billingResult.debugMessage}")
+                Toast.makeText(this, "Google Play purchase failed: ${billingResult.debugMessage}", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
 
     @Volatile
     private var redBoxVmScreenVisible = false
@@ -412,12 +456,15 @@ class MainActivity : SDLActivity() {
         machineType: String,
         diskInterface: String,
         displayAdapter: String,
+        threeDAcceleration: Boolean,
         networkEnabled: Boolean,
         networkAdapter: String,
         networkMode: String,
         qemuParams: String,
         biosDate: String,
-        soundCard: String
+        soundCard: String,
+        bootPriority: String,
+        firmwareMode: String
     ): String
 
     /*
@@ -863,6 +910,7 @@ class MainActivity : SDLActivity() {
             put("machineType", vm.machineType)
             put("diskInterface", vm.diskInterface)
             put("displayAdapter", vm.displayAdapter)
+            put("threeDAcceleration", vm.threeDAcceleration)
             put("networkEnabled", vm.networkEnabled)
             put("networkAdapter", vm.networkAdapter)
             put("networkMode", vm.networkMode)
@@ -870,6 +918,9 @@ class MainActivity : SDLActivity() {
             put("biosDate", vm.biosDate)
             put("soundCard", vm.soundCard)
             put("audioBackend", vm.audioBackend)
+            put("bootPriority", vm.bootPriority)
+            put("firmwareMode", vm.firmwareMode)
+            put("highPriority", vm.highPriority)
         }
 
     private fun jsonToVM(json: JSONObject): VMModel =
@@ -900,6 +951,7 @@ class MainActivity : SDLActivity() {
                     if (it == "VirtIO") "VirtIO Block" else it
                 },
             displayAdapter = json.optString("displayAdapter", "Standard VGA"),
+            threeDAcceleration = json.optBoolean("threeDAcceleration", false),
             networkEnabled = json.optBoolean("networkEnabled", true),
             networkAdapter =
                 json.optString("networkAdapter", "Realtek RTL8139"),
@@ -907,7 +959,10 @@ class MainActivity : SDLActivity() {
             qemuParams = json.optString("qemuParams", ""),
             biosDate = json.optString("biosDate", "Default"),
             soundCard = json.optString("soundCard", "Intel HDA"),
-            audioBackend = json.optString("audioBackend", "Default")
+            audioBackend = json.optString("audioBackend", "Default"),
+            bootPriority = json.optString("bootPriority", "Hard Disk First"),
+            firmwareMode = json.optString("firmwareMode", "Legacy BIOS"),
+            highPriority = json.optBoolean("highPriority", false)
         )
 
     private fun saveVMLibrary(vms: List<VMModel>) {
@@ -1197,6 +1252,101 @@ class MainActivity : SDLActivity() {
         }
     }
 
+    /*
+     * REDBOX Keyboard IME bridge:
+     * Android software keyboards usually commit text through InputConnection
+     * instead of producing ordinary KeyEvent objects. SDLActivity forwards that
+     * committed text here so it can cross the existing Messenger boundary into
+     * the isolated :qemu process.
+     */
+    protected override fun onRedBoxImeText(text: String): Boolean {
+        if (!redBoxVmScreenVisible || !qemuProcessActive.get()) {
+            return false
+        }
+
+        text.forEach { character ->
+            sendRedBoxImeCharacter(character)
+        }
+
+        return true
+    }
+
+    protected override fun onRedBoxImeKey(
+        keyCode: Int,
+        down: Boolean
+    ): Boolean {
+        if (!redBoxVmScreenVisible || !qemuProcessActive.get()) {
+            return false
+        }
+
+        if (!isRedBoxKeyboardKey(keyCode)) {
+            return false
+        }
+
+        sendRedBoxKeyboardKey(keyCode, down)
+        return true
+    }
+
+    private fun sendRedBoxImeCharacter(character: Char) {
+        val mapping = when (character) {
+            in 'a'..'z' -> Pair(KeyEvent.KEYCODE_A + (character - 'a'), false)
+            in 'A'..'Z' -> Pair(KeyEvent.KEYCODE_A + (character - 'A'), true)
+            in '0'..'9' -> Pair(KeyEvent.KEYCODE_0 + (character - '0'), false)
+            ' ' -> Pair(KeyEvent.KEYCODE_SPACE, false)
+            '\n', '\r' -> Pair(KeyEvent.KEYCODE_ENTER, false)
+            '\t' -> Pair(KeyEvent.KEYCODE_TAB, false)
+            ',' -> Pair(KeyEvent.KEYCODE_COMMA, false)
+            '<' -> Pair(KeyEvent.KEYCODE_COMMA, true)
+            '.' -> Pair(KeyEvent.KEYCODE_PERIOD, false)
+            '>' -> Pair(KeyEvent.KEYCODE_PERIOD, true)
+            '`' -> Pair(KeyEvent.KEYCODE_GRAVE, false)
+            '~' -> Pair(KeyEvent.KEYCODE_GRAVE, true)
+            '-' -> Pair(KeyEvent.KEYCODE_MINUS, false)
+            '_' -> Pair(KeyEvent.KEYCODE_MINUS, true)
+            '=' -> Pair(KeyEvent.KEYCODE_EQUALS, false)
+            '+' -> Pair(KeyEvent.KEYCODE_EQUALS, true)
+            '[' -> Pair(KeyEvent.KEYCODE_LEFT_BRACKET, false)
+            '{' -> Pair(KeyEvent.KEYCODE_LEFT_BRACKET, true)
+            ']' -> Pair(KeyEvent.KEYCODE_RIGHT_BRACKET, false)
+            '}' -> Pair(KeyEvent.KEYCODE_RIGHT_BRACKET, true)
+            '\\' -> Pair(KeyEvent.KEYCODE_BACKSLASH, false)
+            '|' -> Pair(KeyEvent.KEYCODE_BACKSLASH, true)
+            ';' -> Pair(KeyEvent.KEYCODE_SEMICOLON, false)
+            ':' -> Pair(KeyEvent.KEYCODE_SEMICOLON, true)
+            '\'' -> Pair(KeyEvent.KEYCODE_APOSTROPHE, false)
+            '"' -> Pair(KeyEvent.KEYCODE_APOSTROPHE, true)
+            '/' -> Pair(KeyEvent.KEYCODE_SLASH, false)
+            '?' -> Pair(KeyEvent.KEYCODE_SLASH, true)
+            '!' -> Pair(KeyEvent.KEYCODE_1, true)
+            '@' -> Pair(KeyEvent.KEYCODE_2, true)
+            '#' -> Pair(KeyEvent.KEYCODE_3, true)
+            '$' -> Pair(KeyEvent.KEYCODE_4, true)
+            '%' -> Pair(KeyEvent.KEYCODE_5, true)
+            '^' -> Pair(KeyEvent.KEYCODE_6, true)
+            '&' -> Pair(KeyEvent.KEYCODE_7, true)
+            '*' -> Pair(KeyEvent.KEYCODE_8, true)
+            '(' -> Pair(KeyEvent.KEYCODE_9, true)
+            ')' -> Pair(KeyEvent.KEYCODE_0, true)
+            else -> null
+        } ?: run {
+            Log.d("RedBoxKeyboard", "IME character not mapped: U+${character.code.toString(16)}")
+            return
+        }
+
+        val (keyCode, needsShift) = mapping
+
+        if (needsShift) {
+            sendRedBoxKeyboardKey(KeyEvent.KEYCODE_SHIFT_LEFT, true)
+        }
+
+        sendRedBoxKeyboardKey(keyCode, true)
+        sendRedBoxKeyboardKey(keyCode, false)
+
+        if (needsShift) {
+            sendRedBoxKeyboardKey(KeyEvent.KEYCODE_SHIFT_LEFT, false)
+        }
+    }
+
     private fun isRedBoxKeyboardKey(keyCode: Int): Boolean {
         return keyCode in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9 ||
             keyCode in KeyEvent.KEYCODE_A..KeyEvent.KEYCODE_Z ||
@@ -1293,9 +1443,117 @@ class MainActivity : SDLActivity() {
         return super.dispatchKeyEvent(event)
     }
 
+    private fun setupBilling() {
+        billingClient = BillingClient.newBuilder(this)
+            .setListener(purchasesUpdatedListener)
+            .enablePendingPurchases(
+                PendingPurchasesParams.newBuilder()
+                    .enableOneTimeProducts()
+                    .build()
+            )
+            .enableAutoServiceReconnection()
+            .build()
+
+        billingClient?.startConnection(object : BillingClientStateListener {
+            override fun onBillingSetupFinished(billingResult: BillingResult) {
+                if (billingResult.responseCode == BillingClient.BillingResponseCode.OK) {
+                    Log.d("RedBoxBilling", "Google Play Billing connected")
+                    queryDonationProduct()
+                } else {
+                    Log.e("RedBoxBilling", "Billing setup failed: ${billingResult.debugMessage}")
+                }
+            }
+
+            override fun onBillingServiceDisconnected() {
+                Log.w("RedBoxBilling", "Google Play Billing disconnected")
+            }
+        })
+    }
+
+    private fun queryDonationProduct(onReady: (() -> Unit)? = null) {
+        val client = billingClient ?: return
+        if (!client.isReady) return
+
+        val product = QueryProductDetailsParams.Product.newBuilder()
+            .setProductId(donateProductId)
+            .setProductType(BillingClient.ProductType.INAPP)
+            .build()
+
+        val params = QueryProductDetailsParams.newBuilder()
+            .setProductList(listOf(product))
+            .build()
+
+        client.queryProductDetailsAsync(params) { billingResult, queryResult ->
+            if (billingResult.responseCode == BillingClient.BillingResponseCode.OK) {
+                donateProductDetails = queryResult.productDetailsList.firstOrNull()
+                if (donateProductDetails != null) onReady?.invoke()
+            } else {
+                Log.e("RedBoxBilling", "Could not load donation product: ${billingResult.debugMessage}")
+            }
+        }
+    }
+
+    private fun launchDonation() {
+        val client = billingClient
+        if (client == null || !client.isReady) {
+            Toast.makeText(this, "Google Play Billing is connecting. Try again in a moment.", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val details = donateProductDetails
+        if (details == null) {
+            queryDonationProduct { launchDonation() }
+            Toast.makeText(this, "Loading donation…", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val offer = details.oneTimePurchaseOfferDetailsList?.firstOrNull()
+        if (offer == null) {
+            Toast.makeText(this, "Donation is not available yet.", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        val offerToken = offer.offerToken
+        if (offerToken.isNullOrBlank()) {
+            Toast.makeText(this, "Donation offer is not available yet.", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        val productParams = BillingFlowParams.ProductDetailsParams.newBuilder()
+            .setProductDetails(details)
+            .setOfferToken(offerToken)
+            .build()
+
+        val flowParams = BillingFlowParams.newBuilder()
+            .setProductDetailsParamsList(listOf(productParams))
+            .build()
+
+        val result = client.launchBillingFlow(this, flowParams)
+        if (result.responseCode != BillingClient.BillingResponseCode.OK) {
+            Toast.makeText(this, "Could not open Google Play purchase: ${result.debugMessage}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun consumeDonationPurchase(purchase: Purchase) {
+        val client = billingClient ?: return
+        val params = ConsumeParams.newBuilder()
+            .setPurchaseToken(purchase.purchaseToken)
+            .build()
+
+        client.consumeAsync(params) { billingResult, _ ->
+            if (billingResult.responseCode == BillingClient.BillingResponseCode.OK) {
+                Toast.makeText(this, "Thank you for supporting RedBox! ❤️", Toast.LENGTH_LONG).show()
+                Log.d("RedBoxBilling", "Donation purchase consumed successfully")
+            } else {
+                Log.e("RedBoxBilling", "Could not consume donation: ${billingResult.debugMessage}")
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        setupBilling()
         bindFreshQemuService()
 
         val nativeMessage = stringFromJNI()
@@ -1303,7 +1561,7 @@ class MainActivity : SDLActivity() {
 
         val qemuStatus = nativeQemuStatus()
         Log.d("RedBoxQEMU", qemuStatus)
-        RedBoxSupportLog.add("RedBox 0.1.3 started; native QEMU status: $qemuStatus")
+        RedBoxSupportLog.add("RedBox 0.2.1 started; native QEMU status: $qemuStatus")
 
         // Stage 5B: load/migrate first, then expose the complete VM library.
         loadSavedVM()
@@ -1319,6 +1577,7 @@ class MainActivity : SDLActivity() {
                     // Keep the old single-VM slot as a development fallback.
                     vms.firstOrNull()?.let { saveLegacyVM(it) }
                 },
+                onDonate = { launchDonation() },
                 onStopQemu = {
                     val serviceMessenger = qemuServiceMessenger
 
@@ -1381,12 +1640,16 @@ class MainActivity : SDLActivity() {
                             putString(QemuIpc.KEY_MACHINE_TYPE, vm.machineType)
                             putString(QemuIpc.KEY_DISK_INTERFACE, vm.diskInterface)
                             putString(QemuIpc.KEY_DISPLAY_ADAPTER, vm.displayAdapter)
+                            putBoolean("three_d_acceleration", vm.threeDAcceleration && vm.displayAdapter == "VirtIO VGA")
                             putBoolean(QemuIpc.KEY_NETWORK_ENABLED, vm.networkEnabled)
                             putString(QemuIpc.KEY_NETWORK_ADAPTER, vm.networkAdapter)
                             putString(QemuIpc.KEY_NETWORK_MODE, vm.networkMode)
                             putString(QemuIpc.KEY_QEMU_PARAMS, vm.qemuParams)
                             putString(QemuIpc.KEY_BIOS_DATE, vm.biosDate)
                             putString(QemuIpc.KEY_SOUND_CARD, vm.soundCard)
+                            putString("boot_priority", vm.bootPriority)
+                            putString("firmware_mode", vm.firmwareMode)
+                            putBoolean("high_priority", vm.highPriority)
                         }
 
                         val message = Message.obtain(null, QemuIpc.MSG_START_VM)
@@ -1454,6 +1717,9 @@ class MainActivity : SDLActivity() {
             return
         }
 
+        billingClient?.endConnection()
+        billingClient = null
+
         if (qemuServiceBound) {
             try {
                 unbindService(
@@ -1482,6 +1748,7 @@ fun RedBoxApp(
     qemuStatus: String,
     initialVMs: List<VMModel>,
     onVMLibrarySaved: (List<VMModel>) -> Unit,
+    onDonate: () -> Unit,
     onStopQemu: () -> Boolean,
     onStartQemu: ((VMModel, (String) -> Unit) -> Unit)
 ) {
@@ -1490,6 +1757,8 @@ fun RedBoxApp(
     var showVMDetails by rememberSaveable { mutableStateOf(false) }
     var showVMScreen by rememberSaveable { mutableStateOf(false) }
     var showDeleteVMConfirmation by rememberSaveable { mutableStateOf(false) }
+    var showDuplicateVMDialog by rememberSaveable { mutableStateOf(false) }
+    var duplicateVMName by rememberSaveable { mutableStateOf("") }
 
     var selectedTab by rememberSaveable {
         mutableIntStateOf(0)
@@ -1504,6 +1773,45 @@ fun RedBoxApp(
     }
 
     val context = LocalContext.current
+
+    /*
+     * v0.2.1 Stage 2B:
+     * A lightweight local RedBox profile powers the Windows-inspired welcome
+     * screen. No account, sign-in, or network connection is required.
+     */
+    val profilePreferences = remember {
+        context.getSharedPreferences("redbox_profile", Context.MODE_PRIVATE)
+    }
+
+    var profileName by rememberSaveable {
+        mutableStateOf(
+            profilePreferences
+                .getString("profile_name", "User")
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+                ?: "User"
+        )
+    }
+
+    var profileAvatarUri by rememberSaveable {
+        mutableStateOf(
+            profilePreferences
+                .getString("profile_avatar_uri", "")
+                .orEmpty()
+        )
+    }
+
+    var showWelcomeScreen by rememberSaveable {
+        mutableStateOf(true)
+    }
+
+    LaunchedEffect(showWelcomeScreen) {
+        if (showWelcomeScreen) {
+            delay(1800L)
+            showWelcomeScreen = false
+        }
+    }
+
     val recentVmPreferences = remember {
         context.getSharedPreferences("redbox_recent_vm", Context.MODE_PRIVATE)
     }
@@ -1542,6 +1850,84 @@ fun RedBoxApp(
         mutableStateOf(false)
     }
 
+    fun persistSelectedDocumentUri(uri: Uri) {
+        try {
+            context.contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+        } catch (error: SecurityException) {
+            Log.w("RedBoxStorage", "Could not persist media URI permission: $uri", error)
+        }
+    }
+
+    fun mediaDisplayName(uri: Uri): String {
+        return try {
+            context.contentResolver.query(
+                uri,
+                arrayOf(OpenableColumns.DISPLAY_NAME),
+                null,
+                null,
+                null
+            )?.use { cursor ->
+                val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (cursor.moveToFirst() && index >= 0) {
+                    cursor.getString(index) ?: "Selected ISO"
+                } else {
+                    "Selected ISO"
+                }
+            } ?: "Selected ISO"
+        } catch (_: Exception) {
+            "Selected ISO"
+        }
+    }
+
+    fun updateSelectedVMMedia(updatedVM: VMModel, action: String) {
+        if (selectedVMIndex !in savedVMs.indices || isVMRunning) {
+            return
+        }
+
+        val updatedLibrary = savedVMs.toMutableList()
+        updatedLibrary[selectedVMIndex] = updatedVM
+        savedVMs = updatedLibrary
+        onVMLibrarySaved(updatedLibrary)
+
+        RedBoxSupportLog.add("$action for VM '${updatedVM.name}'")
+        Log.d("RedBoxStorage", "$action: ${updatedVM.name}")
+    }
+
+    val primaryIsoPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        val vm = if (selectedVMIndex in savedVMs.indices) savedVMs[selectedVMIndex] else null
+        if (uri != null && vm != null && !isVMRunning) {
+            persistSelectedDocumentUri(uri)
+            updateSelectedVMMedia(
+                vm.copy(
+                    isoImage = uri.toString(),
+                    isoImageName = mediaDisplayName(uri)
+                ),
+                "Primary ISO changed"
+            )
+        }
+    }
+
+    val driverIsoQuickPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        val vm = if (selectedVMIndex in savedVMs.indices) savedVMs[selectedVMIndex] else null
+        if (uri != null && vm != null && !isVMRunning) {
+            persistSelectedDocumentUri(uri)
+            updateSelectedVMMedia(
+                vm.copy(
+                    driverIsoImage = uri.toString(),
+                    driverIsoImageName = mediaDisplayName(uri)
+                ),
+                "Driver ISO changed"
+            )
+        }
+    }
+
     var qemuRuntimeStatus by rememberSaveable {
         mutableStateOf("")
     }
@@ -1558,6 +1944,10 @@ fun RedBoxApp(
      */
     BackHandler(enabled = true) {
         when {
+            showDuplicateVMDialog -> {
+                showDuplicateVMDialog = false
+            }
+
             showDeleteVMConfirmation -> {
                 showDeleteVMConfirmation = false
             }
@@ -1735,6 +2125,47 @@ fun RedBoxApp(
                     RedBoxSupportLog.add("Stop request failed for VM '${selectedVM.name}'")
                 }
             },
+            onReturnToVM = {
+                if (isVMRunning && runningVMIndex == selectedVMIndex) {
+                    showVMDetails = false
+                    showVMScreen = true
+
+                    Log.d(
+                        "RedBoxNavigation",
+                        "Returning to running VM screen: ${selectedVM.name}"
+                    )
+                }
+            },
+            onDuplicateVM = {
+                duplicateVMName = "${selectedVM.name} Copy"
+                showDuplicateVMDialog = true
+            },
+            onChangePrimaryIso = {
+                if (!isVMRunning) {
+                    primaryIsoPicker.launch(arrayOf("application/x-iso9660-image", "application/octet-stream", "*/*"))
+                }
+            },
+            onEjectPrimaryIso = {
+                if (!isVMRunning && selectedVM.isoImage.isNotBlank()) {
+                    updateSelectedVMMedia(
+                        selectedVM.copy(isoImage = "", isoImageName = ""),
+                        "Primary ISO ejected"
+                    )
+                }
+            },
+            onChangeDriverIso = {
+                if (!isVMRunning) {
+                    driverIsoQuickPicker.launch(arrayOf("application/x-iso9660-image", "application/octet-stream", "*/*"))
+                }
+            },
+            onEjectDriverIso = {
+                if (!isVMRunning && selectedVM.driverIsoImage.isNotBlank()) {
+                    updateSelectedVMMedia(
+                        selectedVM.copy(driverIsoImage = "", driverIsoImageName = ""),
+                        "Driver ISO ejected"
+                    )
+                }
+            },
             onDeleteVM = {
                 if (!isVMRunning) {
                     showDeleteVMConfirmation = true
@@ -1744,6 +2175,76 @@ fun RedBoxApp(
                 showVMDetails = false
             }
         )
+
+        if (showDuplicateVMDialog) {
+            AlertDialog(
+                onDismissRequest = {
+                    showDuplicateVMDialog = false
+                },
+                title = {
+                    Text("Duplicate virtual machine")
+                },
+                text = {
+                    Column {
+                        Text(
+                            "Create a new VM with the same configuration as \"${selectedVM.name}\". " +
+                                "The disk image, ISO files, and shared storage are referenced, not copied."
+                        )
+
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        OutlinedTextField(
+                            value = duplicateVMName,
+                            onValueChange = {
+                                duplicateVMName = it.take(64)
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("New VM name") },
+                            singleLine = true
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            val cleanName = duplicateVMName.trim()
+                            if (cleanName.isNotEmpty()) {
+                                val duplicatedVM = selectedVM.copy(name = cleanName)
+                                val updatedLibrary = savedVMs + duplicatedVM
+
+                                savedVMs = updatedLibrary
+                                onVMLibrarySaved(updatedLibrary)
+                                rememberSelectedVM(updatedLibrary.lastIndex)
+
+                                showDuplicateVMDialog = false
+                                showVMDetails = true
+
+                                RedBoxSupportLog.add(
+                                    "Duplicated VM configuration '${selectedVM.name}' as '$cleanName'"
+                                )
+
+                                Log.d(
+                                    "RedBoxStorage",
+                                    "VM duplicated: ${selectedVM.name} -> $cleanName; total=${updatedLibrary.size}"
+                                )
+                            }
+                        },
+                        enabled = duplicateVMName.trim().isNotEmpty()
+                    ) {
+                        Text("Duplicate")
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = {
+                            showDuplicateVMDialog = false
+                        }
+                    ) {
+                        Text("Cancel")
+                    }
+                }
+            )
+        }
 
         if (showDeleteVMConfirmation) {
             AlertDialog(
@@ -1832,6 +2333,16 @@ fun RedBoxApp(
         return
     }
 
+    if (showWelcomeScreen) {
+        RedBoxMaterialTheme(darkTheme = darkTheme) {
+            RedBoxWelcomeScreen(
+                profileName = profileName,
+                profileAvatarUri = profileAvatarUri
+            )
+        }
+        return
+    }
+
     RedBoxMaterialTheme(darkTheme = darkTheme) {
         Scaffold(
             containerColor =
@@ -1903,9 +2414,83 @@ fun RedBoxApp(
                     darkTheme = darkTheme,
                     onDarkThemeChanged = {
                         darkTheme = it
+                    },
+                    profileName = profileName,
+                    profileAvatarUri = profileAvatarUri,
+                    onDonate = onDonate,
+                    onProfileAvatarChanged = { newUri ->
+                        profileAvatarUri = newUri
+                        profilePreferences
+                            .edit()
+                            .putString("profile_avatar_uri", newUri)
+                            .apply()
+                    },
+                    onProfileNameChanged = { newName ->
+                        val cleanName =
+                            newName.trim().take(32).ifEmpty { "User" }
+
+                        profileName = cleanName
+                        profilePreferences
+                            .edit()
+                            .putString("profile_name", cleanName)
+                            .apply()
                     }
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun RedBoxWelcomeScreen(
+    profileName: String,
+    profileAvatarUri: String
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            RedBoxProfileAvatar(
+                avatarUri = profileAvatarUri,
+                size = 92,
+                fallbackLetter = profileName.firstOrNull()?.uppercase() ?: "R"
+            )
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            Text(
+                text = profileName,
+                fontSize = 30.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Text(
+                text = "Welcome",
+                fontSize = 18.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            CircularProgressIndicator(
+                modifier = Modifier.size(26.dp),
+                strokeWidth = 3.dp
+            )
+
+            Spacer(modifier = Modifier.height(18.dp))
+
+            Text(
+                text = "RedBox PC Emulator",
+                fontSize = 13.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }
@@ -1932,6 +2517,8 @@ fun RedBoxMaterialTheme(
     val lightColors = lightColorScheme(
         primary = Color(0xFFD7192B),
         onPrimary = Color.White,
+        primaryContainer = Color(0xFFFFDADC),
+        onPrimaryContainer = Color(0xFF4A0710),
         background = Color(0xFFF7F7F9),
         surface = Color.White,
         surfaceVariant = Color(0xFFE9E9EE),
@@ -1953,37 +2540,58 @@ private fun RedBoxBottomBar(
     selectedTab: Int,
     onSelected: (Int) -> Unit
 ) {
-    NavigationBar(
-        containerColor = MaterialTheme.colorScheme.surface,
-        tonalElevation = 8.dp
+    Surface(
+        color = Color.Transparent
     ) {
-        RedBoxNavigationItem(
-            selected = selectedTab == 0,
-            icon = "⌂",
-            label = "Home",
-            onClick = { onSelected(0) }
-        )
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(24.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 10.dp,
+                shadowElevation = 10.dp
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    RedBoxNavigationItem(
+                        selected = selectedTab == 0,
+                        icon = "⌂",
+                        label = "Home",
+                        onClick = { onSelected(0) }
+                    )
 
-        RedBoxNavigationItem(
-            selected = selectedTab == 1,
-            icon = "▣",
-            label = "VMs",
-            onClick = { onSelected(1) }
-        )
+                    RedBoxNavigationItem(
+                        selected = selectedTab == 1,
+                        icon = "▣",
+                        label = "VMs",
+                        onClick = { onSelected(1) }
+                    )
 
-        RedBoxNavigationItem(
-            selected = selectedTab == 2,
-            icon = "□",
-            label = "Files",
-            onClick = { onSelected(2) }
-        )
+                    RedBoxNavigationItem(
+                        selected = selectedTab == 2,
+                        icon = "□",
+                        label = "Files",
+                        onClick = { onSelected(2) }
+                    )
 
-        RedBoxNavigationItem(
-            selected = selectedTab == 3,
-            icon = "⚙",
-            label = "Settings",
-            onClick = { onSelected(3) }
-        )
+                    RedBoxNavigationItem(
+                        selected = selectedTab == 3,
+                        icon = "⚙",
+                        label = "Settings",
+                        onClick = { onSelected(3) }
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -1994,25 +2602,51 @@ private fun RowScope.RedBoxNavigationItem(
     label: String,
     onClick: () -> Unit
 ) {
-    Column(
+    Surface(
         modifier = Modifier
             .weight(1f)
-            .clickable(onClick = onClick)
-            .padding(vertical = 8.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
+            .padding(horizontal = 3.dp),
+        shape = RoundedCornerShape(18.dp),
+        color =
+            if (selected) {
+                MaterialTheme.colorScheme.primaryContainer
+            } else {
+                Color.Transparent
+            }
     ) {
-        Text(
-            text = icon,
-            fontSize = 21.sp,
-            fontWeight = FontWeight.Bold,
-            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(modifier = Modifier.height(2.dp))
-        Text(
-            text = label,
-            fontSize = 12.sp,
-            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        Column(
+            modifier = Modifier
+                .clickable(onClick = onClick)
+                .padding(horizontal = 4.dp, vertical = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = icon,
+                fontSize = if (selected) 20.sp else 18.sp,
+                fontWeight = FontWeight.Bold,
+                color =
+                    if (selected) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    }
+            )
+
+            Spacer(modifier = Modifier.height(3.dp))
+
+            Text(
+                text = label,
+                fontSize = 11.sp,
+                fontWeight =
+                    if (selected) FontWeight.Bold else FontWeight.Medium,
+                color =
+                    if (selected) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    }
+            )
+        }
     }
 }
 
@@ -2031,97 +2665,56 @@ private fun RedBoxHomeMaterial(
         modifier = modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(
-                horizontal = 18.dp,
-                vertical = 12.dp
-            )
+            .padding(horizontal = 18.dp, vertical = 14.dp)
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            RedBoxLogo(
-                modifier = Modifier.size(46.dp)
-            )
+            RedBoxLogo(modifier = Modifier.size(48.dp))
 
             Spacer(modifier = Modifier.width(12.dp))
 
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "RedBox",
-                    fontSize = 20.sp,
+                    text = "RedBox PC Emulator",
+                    fontSize = 21.sp,
                     fontWeight = FontWeight.Bold
                 )
-
                 Text(
-                    text = "PC Emulator",
-                    color =
-                        MaterialTheme.colorScheme.onSurfaceVariant,
+                    text = "Your virtual PCs in one place",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 12.sp
                 )
             }
 
             Surface(
-                shape = RoundedCornerShape(14.dp),
-                color =
-                    MaterialTheme.colorScheme.surfaceVariant
+                shape = RoundedCornerShape(50),
+                color = MaterialTheme.colorScheme.surfaceVariant
             ) {
                 Text(
-                    text = "v0.1.3",
-                    modifier = Modifier.padding(
-                        horizontal = 11.dp,
-                        vertical = 7.dp
-                    ),
-                    fontSize = 12.sp,
+                    text = "v0.2.1",
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 11.sp,
                     fontWeight = FontWeight.SemiBold
                 )
             }
         }
 
+        Spacer(modifier = Modifier.height(22.dp))
+
+        RedBoxHeroCard(
+            hasVm = createdVM != null,
+            onCreateVM = onCreateVM,
+            onVmsClick = onVmsClick
+        )
+
         Spacer(modifier = Modifier.height(24.dp))
 
-        Text(
-            text = "Welcome",
-            fontSize = 32.sp,
-            fontWeight = FontWeight.Bold
-        )
-
-        Spacer(modifier = Modifier.height(6.dp))
-
-        Text(
-            text =
-                "Run virtual machines on your Android device.",
-            color =
-                MaterialTheme.colorScheme.onSurfaceVariant,
-            fontSize = 15.sp
-        )
-
-        Spacer(modifier = Modifier.height(20.dp))
-
-        Button(
-            onClick = onCreateVM,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(56.dp),
-            shape = RoundedCornerShape(18.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor =
-                    MaterialTheme.colorScheme.primary
-            )
-        ) {
-            Text(
-                text = "＋  Create Virtual Machine",
-                fontWeight = FontWeight.Bold,
-                fontSize = 15.sp
-            )
-        }
-
-        Spacer(modifier = Modifier.height(26.dp))
-
         SectionHeader(
-            title = if (createdVM != null) "Recent VM" else "Your VMs",
-            action =
-                if (createdVM != null) "See all" else null,
+            title = if (createdVM != null) "Continue" else "Virtual Machines",
+            action = if (createdVM != null) "View all" else null,
             onAction = onVmsClick
         )
 
@@ -2149,13 +2742,13 @@ private fun RedBoxHomeMaterial(
 
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement =
-                Arrangement.spacedBy(10.dp)
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             QuickAccessCard(
                 modifier = Modifier.weight(1f),
                 icon = "▣",
                 title = "Windows",
+                subtitle = "PC images",
                 onClick = { onQuickAccess("Windows") }
             )
 
@@ -2163,6 +2756,7 @@ private fun RedBoxHomeMaterial(
                 modifier = Modifier.weight(1f),
                 icon = "●",
                 title = "Android",
+                subtitle = "x86 images",
                 onClick = { onQuickAccess("Android") }
             )
 
@@ -2170,17 +2764,113 @@ private fun RedBoxHomeMaterial(
                 modifier = Modifier.weight(1f),
                 icon = "◈",
                 title = "Linux",
+                subtitle = "Distributions",
                 onClick = { onQuickAccess("Linux") }
             )
         }
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        SectionHeader(title = "Engine")
+        SectionHeader(title = "System")
 
         Spacer(modifier = Modifier.height(10.dp))
 
         EngineCard(qemuStatus)
+
+        Spacer(modifier = Modifier.height(18.dp))
+    }
+}
+
+@Composable
+private fun RedBoxHeroCard(
+    hasVm: Boolean,
+    onCreateVM: () -> Unit,
+    onVmsClick: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(26.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.primaryContainer
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(22.dp)
+        ) {
+            Surface(
+                shape = RoundedCornerShape(50),
+                color = MaterialTheme.colorScheme.primary
+            ) {
+                Text(
+                    text = "REDBOX",
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                    color = MaterialTheme.colorScheme.onPrimary,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Text(
+                text = if (hasVm) "Ready when you are." else "Build your virtual PC.",
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                fontSize = 27.sp,
+                fontWeight = FontWeight.Bold
+            )
+
+            Spacer(modifier = Modifier.height(7.dp))
+
+            Text(
+                text = if (hasVm) {
+                    "Continue your recent VM or create another machine."
+                } else {
+                    "Create a VM, attach your disk or ISO, and start emulating."
+                },
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                fontSize = 14.sp
+            )
+
+            Spacer(modifier = Modifier.height(18.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Button(
+                    onClick = onCreateVM,
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(50.dp),
+                    shape = RoundedCornerShape(15.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary
+                    )
+                ) {
+                    Text(
+                        text = "＋  New VM",
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                if (hasVm) {
+                    OutlinedButton(
+                        onClick = onVmsClick,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(50.dp),
+                        shape = RoundedCornerShape(15.dp)
+                    ) {
+                        Text(
+                            text = "My VMs",
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -2204,8 +2894,9 @@ private fun SectionHeader(
         if (action != null && onAction != null) {
             TextButton(onClick = onAction) {
                 Text(
-                    text = action,
-                    color = MaterialTheme.colorScheme.primary
+                    text = "$action  ›",
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.SemiBold
                 )
             }
         }
@@ -2216,25 +2907,32 @@ private fun SectionHeader(
 private fun EmptyVMCard(onCreateVM: () -> Unit) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
+        shape = RoundedCornerShape(22.dp),
         colors = CardDefaults.cardColors(
-            containerColor =
-                MaterialTheme.colorScheme.surface
+            containerColor = MaterialTheme.colorScheme.surface
         )
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(22.dp),
+                .padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Text(
-                text = "▣",
-                fontSize = 34.sp,
-                color = MaterialTheme.colorScheme.primary
-            )
+            Surface(
+                modifier = Modifier.size(58.dp),
+                shape = RoundedCornerShape(18.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text(
+                        text = "▣",
+                        fontSize = 28.sp,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(13.dp))
 
             Text(
                 text = "No virtual machines yet",
@@ -2245,19 +2943,18 @@ private fun EmptyVMCard(onCreateVM: () -> Unit) {
             Spacer(modifier = Modifier.height(5.dp))
 
             Text(
-                text = "Create your first VM to get started.",
-                color =
-                    MaterialTheme.colorScheme.onSurfaceVariant,
+                text = "Your saved machines will appear here.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 13.sp
             )
 
-            Spacer(modifier = Modifier.height(14.dp))
+            Spacer(modifier = Modifier.height(15.dp))
 
             OutlinedButton(
                 onClick = onCreateVM,
                 shape = RoundedCornerShape(14.dp)
             ) {
-                Text("Create VM")
+                Text("Create your first VM")
             }
         }
     }
@@ -2273,47 +2970,42 @@ private fun VMHomeCard(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick),
-        shape = RoundedCornerShape(20.dp),
+        shape = RoundedCornerShape(22.dp),
         colors = CardDefaults.cardColors(
-            containerColor =
-                MaterialTheme.colorScheme.surface
+            containerColor = MaterialTheme.colorScheme.surface
         )
     ) {
         Column(modifier = Modifier.padding(18.dp)) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Surface(
-                    modifier = Modifier.size(50.dp),
-                    shape = RoundedCornerShape(15.dp),
-                    color =
-                        MaterialTheme.colorScheme.surfaceVariant
+                    modifier = Modifier.size(54.dp),
+                    shape = RoundedCornerShape(17.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Text(
                             text = "▣",
-                            fontSize = 24.sp,
-                            color =
-                                MaterialTheme.colorScheme.primary
+                            fontSize = 25.sp,
+                            color = MaterialTheme.colorScheme.primary
                         )
                     }
                 }
 
-                Spacer(modifier = Modifier.width(12.dp))
+                Spacer(modifier = Modifier.width(13.dp))
 
-                Column(
-                    modifier = Modifier.weight(1f)
-                ) {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = vm.name,
                         fontSize = 17.sp,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1
                     )
+
+                    Spacer(modifier = Modifier.height(2.dp))
 
                     Text(
                         text = vm.architecture,
-                        color =
-                            MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 12.sp
                     )
                 }
@@ -2321,34 +3013,51 @@ private fun VMHomeCard(
                 StatusPill(isRunning)
             }
 
-            Spacer(modifier = Modifier.height(14.dp))
+            Spacer(modifier = Modifier.height(15.dp))
 
-            Text(
-                text =
-                    "${vm.ram}  •  ${vm.cpuCores} core${if (vm.cpuCores == "1") "" else "s"}  •  ${if (vm.machineType == "pc") "PC (i440FX)" else "Q35"}",
-                color =
-                    MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 13.sp
-            )
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(15.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(18.dp)
+                ) {
+                    VMStat(
+                        modifier = Modifier.weight(1f),
+                        label = "Memory",
+                        value = vm.ram
+                    )
+                    VMStat(
+                        modifier = Modifier.weight(1f),
+                        label = "CPU",
+                        value = "${vm.cpuCores} core${if (vm.cpuCores == "1") "" else "s"}"
+                    )
+                    VMStat(
+                        modifier = Modifier.weight(1f),
+                        label = "Machine",
+                        value = when (vm.machineType) {
+                            "isapc" -> "ISA PC"
+                            "q35" -> "Q35"
+                            else -> "i440FX"
+                        }
+                    )
+                }
+            }
 
-            Spacer(modifier = Modifier.height(5.dp))
+            Spacer(modifier = Modifier.height(12.dp))
 
             val storageName =
                 when {
-                    vm.diskImageName.isNotEmpty() ->
-                        vm.diskImageName
-
-                    vm.isoImageName.isNotEmpty() ->
-                        vm.isoImageName
-
-                    else ->
-                        "No disk image selected"
+                    vm.diskImageName.isNotEmpty() -> vm.diskImageName
+                    vm.isoImageName.isNotEmpty() -> vm.isoImageName
+                    else -> "No disk image selected"
                 }
 
             Text(
                 text = storageName,
-                color =
-                    MaterialTheme.colorScheme.onSurfaceVariant,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 12.sp,
                 maxLines = 1
             )
@@ -2356,7 +3065,7 @@ private fun VMHomeCard(
             Spacer(modifier = Modifier.height(10.dp))
 
             Text(
-                text = "Tap to open VM details  ›",
+                text = "Open virtual machine  ›",
                 color = MaterialTheme.colorScheme.primary,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.SemiBold
@@ -2366,29 +3075,37 @@ private fun VMHomeCard(
 }
 
 @Composable
+private fun RowScope.VMStat(
+    modifier: Modifier,
+    label: String,
+    value: String
+) {
+    Column(modifier = modifier) {
+        Text(
+            text = label,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontSize = 10.sp
+        )
+        Spacer(modifier = Modifier.height(2.dp))
+        Text(
+            text = value,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1
+        )
+    }
+}
+
+@Composable
 private fun StatusPill(isRunning: Boolean) {
     Surface(
         shape = RoundedCornerShape(50),
-        color =
-            if (isRunning) {
-                Color(0xFF123D28)
-            } else {
-                MaterialTheme.colorScheme.surfaceVariant
-            }
+        color = if (isRunning) Color(0xFF123D28) else MaterialTheme.colorScheme.surfaceVariant
     ) {
         Text(
-            text =
-                if (isRunning) "● Running" else "Stopped",
-            modifier = Modifier.padding(
-                horizontal = 10.dp,
-                vertical = 6.dp
-            ),
-            color =
-                if (isRunning) {
-                    Color(0xFF62E59B)
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                },
+            text = if (isRunning) "● Running" else "Stopped",
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            color = if (isRunning) Color(0xFF62E59B) else MaterialTheme.colorScheme.onSurfaceVariant,
             fontSize = 11.sp,
             fontWeight = FontWeight.SemiBold
         )
@@ -2400,34 +3117,52 @@ private fun QuickAccessCard(
     modifier: Modifier,
     icon: String,
     title: String,
+    subtitle: String,
     onClick: () -> Unit
 ) {
     Card(
         modifier = modifier.clickable(onClick = onClick),
-        shape = RoundedCornerShape(17.dp),
+        shape = RoundedCornerShape(19.dp),
         colors = CardDefaults.cardColors(
-            containerColor =
-                MaterialTheme.colorScheme.surface
+            containerColor = MaterialTheme.colorScheme.surface
         )
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(vertical = 17.dp),
+                .padding(horizontal = 10.dp, vertical = 16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Text(
-                text = icon,
-                fontSize = 24.sp,
-                color = MaterialTheme.colorScheme.primary
-            )
+            Surface(
+                modifier = Modifier.size(42.dp),
+                shape = RoundedCornerShape(13.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text(
+                        text = icon,
+                        fontSize = 20.sp,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
 
-            Spacer(modifier = Modifier.height(7.dp))
+            Spacer(modifier = Modifier.height(9.dp))
 
             Text(
                 text = title,
                 fontSize = 12.sp,
-                fontWeight = FontWeight.SemiBold
+                fontWeight = FontWeight.Bold,
+                maxLines = 1
+            )
+
+            Spacer(modifier = Modifier.height(2.dp))
+
+            Text(
+                text = subtitle,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 9.sp,
+                maxLines = 1
             )
         }
     }
@@ -2435,12 +3170,13 @@ private fun QuickAccessCard(
 
 @Composable
 private fun EngineCard(qemuStatus: String) {
+    val engineReady = qemuStatus.isNotBlank()
+
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
+        shape = RoundedCornerShape(22.dp),
         colors = CardDefaults.cardColors(
-            containerColor =
-                MaterialTheme.colorScheme.surface
+            containerColor = MaterialTheme.colorScheme.surface
         )
     ) {
         Row(
@@ -2448,47 +3184,54 @@ private fun EngineCard(qemuStatus: String) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Surface(
-                modifier = Modifier.size(48.dp),
-                shape = RoundedCornerShape(14.dp),
-                color =
-                    MaterialTheme.colorScheme.surfaceVariant
+                modifier = Modifier.size(50.dp),
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Text(
                         text = "Q",
                         fontWeight = FontWeight.Bold,
-                        fontSize = 20.sp,
-                        color =
-                            MaterialTheme.colorScheme.primary
+                        fontSize = 21.sp,
+                        color = MaterialTheme.colorScheme.primary
                     )
                 }
             }
 
-            Spacer(modifier = Modifier.width(12.dp))
+            Spacer(modifier = Modifier.width(13.dp))
 
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "QEMU",
+                    text = "QEMU Engine",
                     fontWeight = FontWeight.Bold,
                     fontSize = 16.sp
                 )
 
+                Spacer(modifier = Modifier.height(2.dp))
+
                 Text(
-                    text = "Virtual machine engine",
-                    color =
-                        MaterialTheme.colorScheme.onSurfaceVariant,
+                    text = if (engineReady) "Engine loaded and ready" else "Checking emulator engine",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 12.sp
                 )
             }
 
-            Text(
-                text = "●",
-                color = Color(0xFF55D98B),
-                fontSize = 15.sp
-            )
+            Surface(
+                shape = RoundedCornerShape(50),
+                color = if (engineReady) Color(0xFF123D28) else MaterialTheme.colorScheme.surfaceVariant
+            ) {
+                Text(
+                    text = if (engineReady) "● Ready" else "…",
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    color = if (engineReady) Color(0xFF62E59B) else MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
         }
     }
 }
+
 
 @Composable
 private fun RedBoxVMsMaterial(
@@ -2499,140 +3242,132 @@ private fun RedBoxVMsMaterial(
     onCreateVM: () -> Unit,
     onVMClick: (Int) -> Unit
 ) {
-    var selectedFilter by rememberSaveable {
-        mutableStateOf("All")
-    }
+    var selectedFilter by rememberSaveable { mutableStateOf("All") }
 
-    val visibleVMs =
-        savedVMs.mapIndexed { index, vm -> index to vm }
-            .filter { (index, _) ->
-                when (selectedFilter) {
-                    "Running" ->
-                        isRunning && runningVMIndex == index
-
-                    "Stopped" ->
-                        !(isRunning && runningVMIndex == index)
-
-                    else -> true
-                }
+    val visibleVMs = savedVMs.mapIndexed { index, vm -> index to vm }
+        .filter { (index, _) ->
+            when (selectedFilter) {
+                "Running" -> isRunning && runningVMIndex == index
+                "Stopped" -> !(isRunning && runningVMIndex == index)
+                else -> true
             }
+        }
 
     Column(
         modifier = modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(
-                horizontal = 18.dp,
-                vertical = 14.dp
-            )
+            .padding(horizontal = 18.dp, vertical = 14.dp)
     ) {
-        Text(
-            text = "VMs",
-            fontSize = 30.sp,
-            fontWeight = FontWeight.Bold
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Virtual machines",
+                    fontSize = 28.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = when (savedVMs.size) {
+                        0 -> "Create your first PC in RedBox"
+                        1 -> "1 machine in your library"
+                        else -> "${savedVMs.size} machines in your library"
+                    },
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 13.sp
+                )
+            }
 
-        Spacer(modifier = Modifier.height(5.dp))
-
-        Text(
-            text =
-                if (savedVMs.size == 1) {
-                    "1 saved virtual machine"
-                } else {
-                    "${savedVMs.size} saved virtual machines"
-                },
-            color =
-                MaterialTheme.colorScheme.onSurfaceVariant,
-            fontSize = 14.sp
-        )
+            Button(
+                onClick = onCreateVM,
+                shape = RoundedCornerShape(14.dp),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp)
+            ) {
+                Text("+  New VM", fontWeight = FontWeight.Bold)
+            }
+        }
 
         Spacer(modifier = Modifier.height(18.dp))
 
-        Row(
-            horizontalArrangement =
-                Arrangement.spacedBy(8.dp)
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(22.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surface
+            )
         ) {
-            FilterChip(
-                selected = selectedFilter == "All",
-                onClick = {
-                    selectedFilter = "All"
-                },
-                label = { Text("All") }
-            )
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    text = "Library",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Choose a machine to view its hardware, storage and controls.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 12.sp
+                )
 
-            FilterChip(
-                selected = selectedFilter == "Running",
-                onClick = {
-                    selectedFilter = "Running"
-                },
-                label = { Text("Running") }
-            )
+                Spacer(modifier = Modifier.height(14.dp))
 
-            FilterChip(
-                selected = selectedFilter == "Stopped",
-                onClick = {
-                    selectedFilter = "Stopped"
-                },
-                label = { Text("Stopped") }
-            )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("All", "Running", "Stopped").forEach { filter ->
+                        FilterChip(
+                            selected = selectedFilter == filter,
+                            onClick = { selectedFilter = filter },
+                            label = { Text(filter) }
+                        )
+                    }
+                }
+            }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(14.dp))
 
         when {
-            savedVMs.isEmpty() -> {
-                EmptyVMCard(onCreateVM)
-            }
+            savedVMs.isEmpty() -> EmptyVMCard(onCreateVM)
 
             visibleVMs.isEmpty() -> {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(20.dp),
+                    shape = RoundedCornerShape(22.dp),
                     colors = CardDefaults.cardColors(
-                        containerColor =
-                            MaterialTheme.colorScheme.surface
+                        containerColor = MaterialTheme.colorScheme.surface
                     )
                 ) {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(22.dp),
-                        horizontalAlignment =
-                            Alignment.CenterHorizontally
+                            .padding(26.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Text(
-                            text =
-                                if (selectedFilter == "Running") "▶"
-                                else "■",
+                            text = if (selectedFilter == "Running") "▶" else "■",
                             fontSize = 30.sp,
-                            color =
-                                MaterialTheme.colorScheme.primary
+                            color = MaterialTheme.colorScheme.primary
                         )
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
+                        Spacer(modifier = Modifier.height(10.dp))
                         Text(
-                            text =
-                                if (selectedFilter == "Running") {
-                                    "No running virtual machines"
-                                } else {
-                                    "No stopped virtual machines"
-                                },
+                            text = if (selectedFilter == "Running") {
+                                "No running machines"
+                            } else {
+                                "No stopped machines"
+                            },
                             fontWeight = FontWeight.Bold,
                             fontSize = 16.sp
                         )
-
                         Spacer(modifier = Modifier.height(5.dp))
-
                         Text(
-                            text =
-                                if (selectedFilter == "Running") {
-                                    "Start a VM and it will appear here."
-                                } else {
-                                    "All saved VMs are currently running."
-                                },
-                            color =
-                                MaterialTheme.colorScheme.onSurfaceVariant,
+                            text = if (selectedFilter == "Running") {
+                                "Start a VM and it will appear in this view."
+                            } else {
+                                "All saved VMs are currently running."
+                            },
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                             fontSize = 13.sp
                         )
                     }
@@ -2641,37 +3376,97 @@ private fun RedBoxVMsMaterial(
 
             else -> {
                 visibleVMs.forEachIndexed { visibleIndex, (originalIndex, vm) ->
-                    VMHomeCard(
-                        vm = vm,
-                        isRunning =
-                            isRunning &&
-                                runningVMIndex == originalIndex,
-                        onClick = {
-                            onVMClick(originalIndex)
+                    val running = isRunning && runningVMIndex == originalIndex
+
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onVMClick(originalIndex) },
+                        shape = RoundedCornerShape(22.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surface
+                        )
+                    ) {
+                        Column(modifier = Modifier.padding(17.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Surface(
+                                    modifier = Modifier.size(52.dp),
+                                    shape = RoundedCornerShape(16.dp),
+                                    color = MaterialTheme.colorScheme.primaryContainer
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Text(
+                                            text = "▣",
+                                            fontSize = 24.sp,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.width(13.dp))
+
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = vm.name,
+                                        fontSize = 17.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Spacer(modifier = Modifier.height(3.dp))
+                                    Text(
+                                        text = "${vm.architecture}  •  ${vm.ram}  •  ${vm.cpuCores} core${if (vm.cpuCores == "1") "" else "s"}",
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        fontSize = 12.sp
+                                    )
+                                }
+
+                                Surface(
+                                    shape = RoundedCornerShape(50),
+                                    color = if (running) Color(0xFF123D28) else MaterialTheme.colorScheme.surfaceVariant
+                                ) {
+                                    Text(
+                                        text = if (running) "● Running" else "Stopped",
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                        color = if (running) Color(0xFF62E59B) else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(13.dp))
+                            HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
+                            Spacer(modifier = Modifier.height(11.dp))
+
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = when {
+                                        vm.diskImageName.isNotBlank() -> "Disk: ${vm.diskImageName}"
+                                        vm.isoImageName.isNotBlank() -> "ISO: ${vm.isoImageName}"
+                                        else -> "No storage selected"
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                    maxLines = 1,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontSize = 11.sp
+                                )
+                                Text(
+                                    text = "Open  ›",
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
                         }
-                    )
+                    }
 
                     if (visibleIndex != visibleVMs.lastIndex) {
-                        Spacer(modifier = Modifier.height(12.dp))
+                        Spacer(modifier = Modifier.height(11.dp))
                     }
                 }
             }
         }
 
         Spacer(modifier = Modifier.height(18.dp))
-
-        FloatingActionButton(
-            onClick = onCreateVM,
-            containerColor =
-                MaterialTheme.colorScheme.primary,
-            contentColor = Color.White,
-            modifier = Modifier.align(Alignment.End)
-        ) {
-            Text(
-                text = "+",
-                fontSize = 24.sp
-            )
-        }
     }
 }
 
@@ -2848,10 +3643,65 @@ private fun FileCategoryCard(
 }
 
 @Composable
+private fun RedBoxProfileAvatar(
+    avatarUri: String,
+    size: Int,
+    fallbackLetter: String
+) {
+    val context = LocalContext.current
+    val avatarBitmap = remember(avatarUri) {
+        if (avatarUri.isBlank()) {
+            null
+        } else {
+            try {
+                context.contentResolver
+                    .openInputStream(Uri.parse(avatarUri))
+                    ?.use { BitmapFactory.decodeStream(it) }
+            } catch (error: Exception) {
+                Log.w("RedBoxProfile", "Could not load profile avatar", error)
+                null
+            }
+        }
+    }
+
+    Surface(
+        modifier = Modifier.size(size.dp),
+        shape = CircleShape,
+        color = MaterialTheme.colorScheme.primary,
+        tonalElevation = 8.dp
+    ) {
+        if (avatarBitmap != null) {
+            Image(
+                bitmap = avatarBitmap.asImageBitmap(),
+                contentDescription = "Profile avatar",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clip(CircleShape)
+            )
+        } else {
+            Box(contentAlignment = Alignment.Center) {
+                Text(
+                    text = fallbackLetter,
+                    color = MaterialTheme.colorScheme.onPrimary,
+                    fontSize = (size * 0.46f).sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun RedBoxSettingsMaterial(
     modifier: Modifier,
     darkTheme: Boolean,
-    onDarkThemeChanged: (Boolean) -> Unit
+    onDarkThemeChanged: (Boolean) -> Unit,
+    profileName: String,
+    profileAvatarUri: String,
+    onDonate: () -> Unit,
+    onProfileAvatarChanged: (String) -> Unit,
+    onProfileNameChanged: (String) -> Unit
 ) {
     val context = LocalContext.current
     var showAboutDialog by remember { mutableStateOf(false) }
@@ -2860,6 +3710,119 @@ private fun RedBoxSettingsMaterial(
     var showStorageDialog by remember { mutableStateOf(false) }
     var showClearCacheDialog by remember { mutableStateOf(false) }
     var showSupportLogDialog by remember { mutableStateOf(false) }
+    var showProfileDialog by remember { mutableStateOf(false) }
+    var profileNameDraft by remember(profileName) {
+        mutableStateOf(profileName)
+    }
+
+    val profileAvatarPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            try {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            } catch (error: Exception) {
+                Log.w("RedBoxProfile", "Could not persist avatar permission", error)
+            }
+            onProfileAvatarChanged(uri.toString())
+        }
+    }
+
+    if (showProfileDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                profileNameDraft = profileName
+                showProfileDialog = false
+            },
+            title = { Text("RedBox Profile") },
+            text = {
+                Column {
+                    Text(
+                        text = "Choose the name shown on the RedBox welcome screen. This is stored only on this device.",
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                        RedBoxProfileAvatar(
+                            avatarUri = profileAvatarUri,
+                            size = 72,
+                            fallbackLetter = profileNameDraft.firstOrNull()?.uppercase() ?: "R"
+                        )
+
+                        Column {
+                            OutlinedButton(
+                                onClick = {
+                                    profileAvatarPicker.launch(arrayOf("image/*"))
+                                }
+                            ) {
+                                Text(
+                                    if (profileAvatarUri.isBlank()) {
+                                        "Choose picture"
+                                    } else {
+                                        "Change picture"
+                                    }
+                                )
+                            }
+
+                            if (profileAvatarUri.isNotBlank()) {
+                                TextButton(
+                                    onClick = {
+                                        onProfileAvatarChanged("")
+                                    }
+                                ) {
+                                    Text("Remove picture")
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    OutlinedTextField(
+                        value = profileNameDraft,
+                        onValueChange = {
+                            if (it.length <= 32) {
+                                profileNameDraft = it
+                            }
+                        },
+                        label = { Text("Profile name") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onProfileNameChanged(profileNameDraft)
+                        showProfileDialog = false
+                    }
+                ) {
+                    Text("Save")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        profileNameDraft = profileName
+                        showProfileDialog = false
+                    }
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
 
     if (showAboutDialog) {
         AlertDialog(
@@ -2867,7 +3830,7 @@ private fun RedBoxSettingsMaterial(
             title = { Text("About RedBox") },
             text = {
                 Text(
-                    "RedBox PC Emulator\nVersion 0.1.3\n\n" +
+                    "RedBox PC Emulator\nVersion 0.2.1\n\n" +
                             "A QEMU-based PC emulator for Android.\n\n" +
                             "Run. Explore. Create."
                 )
@@ -2883,72 +3846,70 @@ private fun RedBoxSettingsMaterial(
     if (showWhatsNewDialog) {
         AlertDialog(
             onDismissRequest = { showWhatsNewDialog = false },
-            title = { Text("What's New in v0.1.3") },
+            title = { Text("What's New in v0.2.1") },
             text = {
                 Column(
                     modifier = Modifier
-                        .height(360.dp)
+                        .height(420.dp)
                         .verticalScroll(rememberScrollState())
                 ) {
+                    Text("Profile avatar", fontWeight = FontWeight.Bold, fontSize = 15.sp)
                     Text(
-                        text = "Multiple saved VMs",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 15.sp
-                    )
-                    Text(
-                        text = "Create, save, open, edit, start, and delete multiple virtual machines independently.",
+                        "Choose your own profile picture for the RedBox welcome screen, change it later, or remove it at any time.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 13.sp
                     )
 
                     Spacer(modifier = Modifier.height(14.dp))
 
+                    Text("ISA PC (Legacy)", fontWeight = FontWeight.Bold, fontSize = 15.sp)
                     Text(
-                        text = "Recent VM & VM filters",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 15.sp
-                    )
-                    Text(
-                        text = "Home remembers your recently selected VM, while All, Running, and Stopped filters make the VM library easier to manage.",
+                        "A new legacy ISA PC machine type is available alongside PC (i440FX) and Q35 for older guest operating systems.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 13.sp
                     )
 
                     Spacer(modifier = Modifier.height(14.dp))
 
+                    Text("Redesigned Edit VM", fontWeight = FontWeight.Bold, fontSize = 15.sp)
                     Text(
-                        text = "Improved VM configuration",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 15.sp
-                    )
-                    Text(
-                        text = "System, display, storage, disk interface, and advanced QEMU settings now include clearer descriptions and safer guidance.",
+                        "Edit VM has been reorganized into a cleaner configuration screen while keeping the existing CPU, memory, machine, display, storage, network, audio, boot, firmware, and advanced options.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 13.sp
                     )
 
                     Spacer(modifier = Modifier.height(14.dp))
 
+                    Text("Mouse sensitivity", fontWeight = FontWeight.Bold, fontSize = 15.sp)
                     Text(
-                        text = "Better VM Details",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 15.sp
-                    )
-                    Text(
-                        text = "VM Details now gives a cleaner overview of configuration, storage and boot media, devices, performance, and VM status.",
+                        "Change VM mouse sensitivity between Low, Normal, and High from the runtime settings.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 13.sp
                     )
 
                     Spacer(modifier = Modifier.height(14.dp))
 
+                    Text("Display Refresh", fontWeight = FontWeight.Bold, fontSize = 15.sp)
                     Text(
-                        text = "Validation & Support Diagnostic Log",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 15.sp
+                        "A Refresh control is available in the VM fullscreen toolbar to refresh the active RedBox display surface without restarting the VM.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 13.sp
                     )
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    Text("Start without disk or ISO", fontWeight = FontWeight.Bold, fontSize = 15.sp)
                     Text(
-                        text = "RedBox checks essential VM settings before startup and can copy or share recent diagnostic events when reporting a problem.",
+                        "RedBox can now start a VM even when no main disk image or installation ISO is attached.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 13.sp
+                    )
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    Text("Donate Me", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                    Text(
+                        "A one-time Donate Me option has been added through Google Play Billing to support RedBox development.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 13.sp
                     )
@@ -2968,7 +3929,7 @@ private fun RedBoxSettingsMaterial(
             title = { Text("Check for Update") },
             text = {
                 Text(
-                    "Installed version: 0.1.3\n\n" +
+                    "Installed version: 0.2.1\n\n" +
                             "The update button is working. An online update source can be connected later when RedBox has a release page or update server."
                 )
             },
@@ -3024,7 +3985,7 @@ private fun RedBoxSettingsMaterial(
                     onClick = {
                         val shareIntent = Intent(Intent.ACTION_SEND).apply {
                             type = "text/plain"
-                            putExtra(Intent.EXTRA_SUBJECT, "RedBox 0.1.3 Support Log")
+                            putExtra(Intent.EXTRA_SUBJECT, "RedBox 0.2.1 Support Log")
                             putExtra(Intent.EXTRA_TEXT, report)
                         }
                         context.startActivity(
@@ -3130,6 +4091,27 @@ private fun RedBoxSettingsMaterial(
 
         SettingsCard {
             SettingsRow(
+                icon = "☺",
+                title = "Profile",
+                subtitle = "$profileName • Name & avatar",
+                onClick = {
+                    profileNameDraft = profileName
+                    showProfileDialog = true
+                }
+            )
+
+            SettingsDivider()
+
+            SettingsRow(
+                icon = "♥",
+                title = "Donate Me — €4.99",
+                subtitle = "Support RedBox development with a one-time donation",
+                onClick = onDonate
+            )
+
+            SettingsDivider()
+
+            SettingsRow(
                 icon = "☼",
                 title = "Dark Theme",
                 subtitle =
@@ -3152,7 +4134,7 @@ private fun RedBoxSettingsMaterial(
             SettingsRow(
                 icon = "ⓘ",
                 title = "About RedBox",
-                subtitle = "RedBox PC Emulator • Version 0.1.3",
+                subtitle = "RedBox PC Emulator • Version 0.2.1",
                 onClick = { showAboutDialog = true }
             )
 
@@ -3161,7 +4143,7 @@ private fun RedBoxSettingsMaterial(
             SettingsRow(
                 icon = "★",
                 title = "What's New",
-                subtitle = "See what's new in version 0.1.3",
+                subtitle = "See what's new in version 0.2.1",
                 onClick = { showWhatsNewDialog = true }
             )
 
@@ -3170,7 +4152,7 @@ private fun RedBoxSettingsMaterial(
             SettingsRow(
                 icon = "↻",
                 title = "Check for Update",
-                subtitle = "Version 0.1.3",
+                subtitle = "Version 0.2.1",
                 onClick = { showUpdateDialog = true }
             )
 
@@ -3230,7 +4212,7 @@ private fun RedBoxSettingsMaterial(
                     )
 
                     Text(
-                        text = "Version 0.1.3",
+                        text = "Version 0.2.1",
                         color =
                             MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 12.sp
@@ -3376,10 +4358,6 @@ private fun validateVMForStart(vm: VMModel): String? {
         return "Select a valid CPU core count before starting the VM."
     }
 
-    if (vm.diskImage.isBlank() && vm.isoImage.isBlank()) {
-        return "Select a disk image or ISO image before starting the VM."
-    }
-
     return null
 }
 
@@ -3392,6 +4370,12 @@ private fun VMDetailsScreen(
     onEditVM: () -> Unit,
     onStartVM: () -> Unit,
     onStopVM: () -> Unit,
+    onReturnToVM: () -> Unit,
+    onDuplicateVM: () -> Unit,
+    onChangePrimaryIso: () -> Unit,
+    onEjectPrimaryIso: () -> Unit,
+    onChangeDriverIso: () -> Unit,
+    onEjectDriverIso: () -> Unit,
     onDeleteVM: () -> Unit,
     onBack: () -> Unit
 ) {
@@ -3400,17 +4384,10 @@ private fun VMDetailsScreen(
             topBar = {
                 TopAppBar(
                     title = {
-                        Column {
-                            Text(
-                                text = vm.name,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                text = "Virtual Machine",
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
+                        Text(
+                            text = "VM details",
+                            fontWeight = FontWeight.Bold
+                        )
                     },
                     navigationIcon = {
                         TextButton(onClick = onBack) {
@@ -3419,6 +4396,14 @@ private fun VMDetailsScreen(
                                 fontSize = 30.sp,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
+                        }
+                    },
+                    actions = {
+                        TextButton(
+                            onClick = onEditVM,
+                            enabled = !isRunning
+                        ) {
+                            Text(if (isRunning) "Locked" else "Edit")
                         }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(
@@ -3433,7 +4418,7 @@ private fun VMDetailsScreen(
                     .fillMaxSize()
                     .padding(innerPadding)
                     .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 18.dp, vertical = 16.dp)
+                    .padding(horizontal = 18.dp, vertical = 14.dp)
             ) {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -3443,12 +4428,10 @@ private fun VMDetailsScreen(
                     )
                 ) {
                     Column(modifier = Modifier.padding(20.dp)) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
                             Surface(
-                                modifier = Modifier.size(64.dp),
-                                shape = RoundedCornerShape(18.dp),
+                                modifier = Modifier.size(66.dp),
+                                shape = RoundedCornerShape(20.dp),
                                 color = MaterialTheme.colorScheme.primaryContainer
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
@@ -3465,10 +4448,10 @@ private fun VMDetailsScreen(
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
                                     text = vm.name,
-                                    fontSize = 21.sp,
+                                    fontSize = 22.sp,
                                     fontWeight = FontWeight.Bold
                                 )
-                                Spacer(modifier = Modifier.height(3.dp))
+                                Spacer(modifier = Modifier.height(4.dp))
                                 Text(
                                     text = "${vm.architecture}  •  ${vm.ram}  •  ${vm.cpuCores} core${if (vm.cpuCores == "1") "" else "s"}",
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -3478,336 +4461,306 @@ private fun VMDetailsScreen(
 
                             Surface(
                                 shape = RoundedCornerShape(50),
-                                color = if (isRunning) {
-                                    Color(0xFF123D28)
-                                } else {
-                                    MaterialTheme.colorScheme.surfaceVariant
-                                }
+                                color = if (isRunning) Color(0xFF123D28) else MaterialTheme.colorScheme.surfaceVariant
                             ) {
                                 Text(
                                     text = if (isRunning) "● Running" else "Stopped",
-                                    modifier = Modifier.padding(
-                                        horizontal = 11.dp,
-                                        vertical = 7.dp
-                                    ),
-                                    color = if (isRunning) {
-                                        Color(0xFF62E59B)
-                                    } else {
-                                        MaterialTheme.colorScheme.onSurfaceVariant
-                                    },
+                                    modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
+                                    color = if (isRunning) Color(0xFF62E59B) else MaterialTheme.colorScheme.onSurfaceVariant,
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.SemiBold
                                 )
                             }
                         }
 
+                        Spacer(modifier = Modifier.height(16.dp))
+                        HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
                         Spacer(modifier = Modifier.height(14.dp))
 
                         Text(
                             text = when {
                                 vm.diskImageName.isNotBlank() && vm.isoImageName.isNotBlank() ->
-                                    "Disk and installation media are ready."
+                                    "Disk and installation media are attached."
                                 vm.diskImageName.isNotBlank() ->
-                                    "Disk image selected. No primary ISO attached."
+                                    "Disk image attached. No primary ISO selected."
                                 vm.isoImageName.isNotBlank() ->
-                                    "Installation media selected. No disk image attached."
+                                    "Installation media attached. No disk image selected."
                                 else ->
                                     "No boot storage or installation media selected."
                             },
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             fontSize = 12.sp
                         )
-                    }
-                }
 
-                Spacer(modifier = Modifier.height(18.dp))
+                        Spacer(modifier = Modifier.height(18.dp))
 
-                Text(
-                    text = "Configuration",
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.Bold
-                )
-
-                Spacer(modifier = Modifier.height(9.dp))
-
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surface
-                    )
-                ) {
-                    Column(modifier = Modifier.padding(18.dp)) {
-                        DetailRowMaterial(
-                            icon = "▤",
-                            title = "Memory",
-                            value = vm.ram
-                        )
-                        HorizontalDivider(
-                            modifier = Modifier.padding(vertical = 13.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant
-                        )
-                        DetailRowMaterial(
-                            icon = "C",
-                            title = "Processor",
-                            value = "${vm.cpuCores} core${if (vm.cpuCores == "1") "" else "s"} • ${vm.cpuModel}"
-                        )
-                        HorizontalDivider(
-                            modifier = Modifier.padding(vertical = 13.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant
-                        )
-                        DetailRowMaterial(
-                            icon = "M",
-                            title = "Machine",
-                            value = if (vm.machineType == "pc") "PC (i440FX)" else "Q35"
-                        )
-                        HorizontalDivider(
-                            modifier = Modifier.padding(vertical = 13.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant
-                        )
-                        DetailRowMaterial(
-                            icon = "G",
-                            title = "Display",
-                            value = vm.displayAdapter
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(18.dp))
-
-                Text(
-                    text = "Storage & Boot Media",
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.Bold
-                )
-
-                Spacer(modifier = Modifier.height(9.dp))
-
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surface
-                    )
-                ) {
-                    Column(modifier = Modifier.padding(18.dp)) {
-                        StorageRowMaterial(
-                            icon = "□",
-                            title = "Disk Image",
-                            value = vm.diskImageName.ifBlank { "Not selected" }
-                        )
-
-                        HorizontalDivider(
-                            modifier = Modifier.padding(vertical = 13.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant
-                        )
-
-                        StorageRowMaterial(
-                            icon = "◉",
-                            title = "Primary ISO",
-                            value = vm.isoImageName.ifBlank { "Not selected" }
-                        )
-
-                        HorizontalDivider(
-                            modifier = Modifier.padding(vertical = 13.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant
-                        )
-
-                        StorageRowMaterial(
-                            icon = "◌",
-                            title = "Driver ISO",
-                            value = vm.driverIsoImageName.ifBlank { "Not selected" }
-                        )
-
-                        HorizontalDivider(
-                            modifier = Modifier.padding(vertical = 13.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant
-                        )
-
-                        StorageRowMaterial(
-                            icon = "▱",
-                            title = "Shared Hard Drive",
-                            value = vm.sharedDiskImageName.ifBlank { "Not selected" }
-                        )
-
-                        HorizontalDivider(
-                            modifier = Modifier.padding(vertical = 13.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant
-                        )
-
-                        DetailRowMaterial(
-                            icon = "D",
-                            title = "Disk Interface",
-                            value = vm.diskInterface
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(18.dp))
-
-                Text(
-                    text = "Devices & Performance",
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.Bold
-                )
-
-                Spacer(modifier = Modifier.height(9.dp))
-
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surface
-                    )
-                ) {
-                    Column(modifier = Modifier.padding(18.dp)) {
-                        DetailRowMaterial(
-                            icon = "◈",
-                            title = "Performance",
-                            value = "${vm.performancePreset} • ${vm.tcgCache}"
-                        )
-                        HorizontalDivider(
-                            modifier = Modifier.padding(vertical = 13.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant
-                        )
-                        DetailRowMaterial(
-                            icon = "T",
-                            title = "Multi-threaded TCG",
-                            value = if (vm.multiThreadedTcg) "Enabled" else "Disabled"
-                        )
-                        HorizontalDivider(
-                            modifier = Modifier.padding(vertical = 13.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant
-                        )
-                        DetailRowMaterial(
-                            icon = "N",
-                            title = "Network",
-                            value = if (vm.networkEnabled) {
-                                "${vm.networkAdapter} • ${vm.networkMode}"
-                            } else {
-                                "Disabled"
+                        if (isRunning) {
+                            Button(
+                                onClick = onReturnToVM,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(56.dp),
+                                shape = RoundedCornerShape(16.dp)
+                            ) {
+                                Text("▶  Return to VM", fontWeight = FontWeight.Bold)
                             }
-                        )
-                        HorizontalDivider(
-                            modifier = Modifier.padding(vertical = 13.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant
-                        )
-                        DetailRowMaterial(
-                            icon = "♪",
-                            title = "Sound",
-                            value = vm.soundCard
-                        )
-                        HorizontalDivider(
-                            modifier = Modifier.padding(vertical = 13.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant
-                        )
-                        DetailRowMaterial(
-                            icon = "A",
-                            title = "Custom QEMU Parameters",
-                            value = if (vm.qemuParams.isBlank()) "None" else "Active"
-                        )
+
+                            Spacer(modifier = Modifier.height(9.dp))
+
+                            OutlinedButton(
+                                onClick = onStopVM,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(50.dp),
+                                shape = RoundedCornerShape(16.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    contentColor = Color(0xFFEF5350)
+                                )
+                            ) {
+                                Text("Stop VM", fontWeight = FontWeight.SemiBold)
+                            }
+                        } else {
+                            Button(
+                                onClick = onStartVM,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(56.dp),
+                                shape = RoundedCornerShape(16.dp)
+                            ) {
+                                Text("▶  Start VM", fontWeight = FontWeight.Bold)
+                            }
+                        }
                     }
                 }
 
                 if (qemuRuntimeStatus.isNotBlank()) {
-                    Spacer(modifier = Modifier.height(18.dp))
-
+                    Spacer(modifier = Modifier.height(14.dp))
                     Card(
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(20.dp),
+                        shape = RoundedCornerShape(18.dp),
                         colors = CardDefaults.cardColors(
                             containerColor = MaterialTheme.colorScheme.primaryContainer
                         )
                     ) {
-                        Column(modifier = Modifier.padding(18.dp)) {
+                        Column(modifier = Modifier.padding(16.dp)) {
                             Text(
-                                text = if (isRunning) "QEMU Engine" else "VM Status",
+                                text = if (isRunning) "QEMU engine" else "VM status",
                                 fontWeight = FontWeight.Bold,
-                                fontSize = 15.sp,
+                                fontSize = 14.sp,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer
                             )
-                            Spacer(modifier = Modifier.height(5.dp))
+                            Spacer(modifier = Modifier.height(4.dp))
                             Text(
                                 text = qemuRuntimeStatus,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                fontSize = 13.sp
+                                fontSize = 12.sp
                             )
                         }
                     }
                 }
 
-                Spacer(modifier = Modifier.height(22.dp))
+                Spacer(modifier = Modifier.height(20.dp))
+                Text("Hardware", fontSize = 19.sp, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.height(9.dp))
+
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                ) {
+                    Column(modifier = Modifier.padding(18.dp)) {
+                        DetailRowMaterial("▤", "Memory", vm.ram)
+                        HorizontalDivider(Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.surfaceVariant)
+                        DetailRowMaterial("C", "Processor", "${vm.cpuCores} core${if (vm.cpuCores == "1") "" else "s"} • ${vm.cpuModel}")
+                        HorizontalDivider(Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.surfaceVariant)
+                        DetailRowMaterial(
+                            "M",
+                            "Machine",
+                            when (vm.machineType) {
+                                "isapc" -> "ISA PC (Legacy)"
+                                "q35" -> "Q35"
+                                else -> "PC (i440FX)"
+                            }
+                        )
+                        HorizontalDivider(Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.surfaceVariant)
+                        DetailRowMaterial("G", "Display", vm.displayAdapter)
+                        DetailRowMaterial(
+                            "3D",
+                            "3D Acceleration",
+                            if (vm.displayAdapter == "VirtIO VGA" && vm.threeDAcceleration) "Enabled" else "Disabled"
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(18.dp))
+                Text("Storage", fontSize = 19.sp, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.height(9.dp))
+
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                ) {
+                    Column(modifier = Modifier.padding(18.dp)) {
+                        StorageRowMaterial("□", "Disk image", vm.diskImageName.ifBlank { "Not selected" })
+                        HorizontalDivider(Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.surfaceVariant)
+                        StorageRowMaterial("◉", "Primary ISO", vm.isoImageName.ifBlank { "Not selected" })
+                        HorizontalDivider(Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.surfaceVariant)
+                        StorageRowMaterial("◌", "Driver ISO", vm.driverIsoImageName.ifBlank { "Not selected" })
+                        HorizontalDivider(Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.surfaceVariant)
+                        StorageRowMaterial("▱", "Shared hard drive", vm.sharedDiskImageName.ifBlank { "Not selected" })
+                        HorizontalDivider(Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.surfaceVariant)
+                        DetailRowMaterial("D", "Disk interface", vm.diskInterface)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(18.dp))
+                Text("Removable media", fontSize = 19.sp, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.height(9.dp))
+
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                ) {
+                    Column(modifier = Modifier.padding(18.dp)) {
+                        Text(
+                            "Primary installation ISO",
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            vm.isoImageName.ifBlank { "No ISO mounted" },
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 12.sp
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = onChangePrimaryIso,
+                                enabled = !isRunning,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text(if (vm.isoImage.isBlank()) "Mount ISO" else "Change ISO")
+                            }
+                            OutlinedButton(
+                                onClick = onEjectPrimaryIso,
+                                enabled = !isRunning && vm.isoImage.isNotBlank(),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Eject")
+                            }
+                        }
+
+                        HorizontalDivider(Modifier.padding(vertical = 14.dp), color = MaterialTheme.colorScheme.surfaceVariant)
+
+                        Text(
+                            "Driver / tools ISO",
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            vm.driverIsoImageName.ifBlank { "No driver ISO mounted" },
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 12.sp
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = onChangeDriverIso,
+                                enabled = !isRunning,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text(if (vm.driverIsoImage.isBlank()) "Mount ISO" else "Change ISO")
+                            }
+                            OutlinedButton(
+                                onClick = onEjectDriverIso,
+                                enabled = !isRunning && vm.driverIsoImage.isNotBlank(),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Eject")
+                            }
+                        }
+
+                        if (isRunning) {
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Text(
+                                "Stop the VM before changing removable media.",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(18.dp))
+                Text("Devices & engine", fontSize = 19.sp, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.height(9.dp))
+
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                ) {
+                    Column(modifier = Modifier.padding(18.dp)) {
+                        DetailRowMaterial("◈", "Performance", "${vm.performancePreset} • ${vm.tcgCache}")
+                        HorizontalDivider(Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.surfaceVariant)
+                        DetailRowMaterial("T", "Multi-threaded TCG", if (vm.multiThreadedTcg) "Enabled" else "Disabled")
+                        HorizontalDivider(Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.surfaceVariant)
+                        DetailRowMaterial("N", "Network", if (vm.networkEnabled) "${vm.networkAdapter} • ${vm.networkMode}" else "Disabled")
+                        HorizontalDivider(Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.surfaceVariant)
+                        DetailRowMaterial("♪", "Sound", vm.soundCard)
+                        HorizontalDivider(Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.surfaceVariant)
+                        DetailRowMaterial("A", "Custom QEMU parameters", if (vm.qemuParams.isBlank()) "None" else "Active")
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                OutlinedButton(
+                    onClick = onDuplicateVM,
+                    modifier = Modifier.fillMaxWidth().height(50.dp),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Text("⧉  Duplicate VM")
+                }
+
+                Spacer(modifier = Modifier.height(9.dp))
 
                 OutlinedButton(
                     onClick = onEditVM,
                     enabled = !isRunning,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(52.dp),
-                    shape = RoundedCornerShape(18.dp)
+                    modifier = Modifier.fillMaxWidth().height(50.dp),
+                    shape = RoundedCornerShape(16.dp)
                 ) {
-                    Text(
-                        text = if (isRunning) "Edit VM (stop VM first)" else "✎  Edit VM",
-                        fontWeight = FontWeight.SemiBold
-                    )
+                    Text(if (isRunning) "Edit VM (stop VM first)" else "✎  Edit configuration")
                 }
 
-                Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(9.dp))
 
                 OutlinedButton(
                     onClick = onDeleteVM,
                     enabled = !isRunning,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(52.dp),
-                    shape = RoundedCornerShape(18.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = Color(0xFFEF5350)
-                    )
+                    modifier = Modifier.fillMaxWidth().height(50.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFEF5350))
                 ) {
-                    Text(
-                        text = if (isRunning) {
-                            "Delete VM (stop VM first)"
-                        } else {
-                            "Delete VM"
-                        },
-                        fontWeight = FontWeight.SemiBold
-                    )
+                    Text(if (isRunning) "Delete VM (stop VM first)" else "Delete VM")
                 }
 
-                Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(9.dp))
 
-                Button(
-                    onClick = if (isRunning) onStopVM else onStartVM,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(58.dp),
-                    shape = RoundedCornerShape(18.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (isRunning) {
-                            Color(0xFFB3261E)
-                        } else {
-                            MaterialTheme.colorScheme.primary
-                        }
-                    )
-                ) {
-                    Text(
-                        text = if (isRunning) "Stop VM" else "Start VM",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 15.sp
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                OutlinedButton(
+                TextButton(
                     onClick = onBack,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(52.dp),
-                    shape = RoundedCornerShape(18.dp)
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("Back to VMs")
+                    Text("Back to VM library")
                 }
 
                 Spacer(modifier = Modifier.height(12.dp))
@@ -3815,7 +4768,6 @@ private fun VMDetailsScreen(
         }
     }
 }
-
 
 @Composable
 private fun SettingsGroupTitle(
@@ -3863,6 +4815,7 @@ private fun EditVMScreen(
     var showMachineOptions by remember(vm) { mutableStateOf(false) }
     var diskInterface by remember(vm) { mutableStateOf(vm.diskInterface) }
     var displayAdapter by remember(vm) { mutableStateOf(vm.displayAdapter) }
+    var threeDAcceleration by remember(vm) { mutableStateOf(vm.threeDAcceleration) }
 
     // RedBox blank disk creator.
     var showCreateDiskDialog by remember(vm) { mutableStateOf(false) }
@@ -3875,6 +4828,9 @@ private fun EditVMScreen(
     var qemuParams by remember(vm) { mutableStateOf(vm.qemuParams) }
     var biosDate by remember(vm) { mutableStateOf(vm.biosDate) }
     var soundCard by remember(vm) { mutableStateOf(vm.soundCard) }
+    var bootPriority by remember(vm) { mutableStateOf(vm.bootPriority) }
+    var firmwareMode by remember(vm) { mutableStateOf(vm.firmwareMode) }
+    var highPriority by remember(vm) { mutableStateOf(vm.highPriority) }
 
     var diskImage by remember(vm) { mutableStateOf(vm.diskImage) }
     var diskImageName by remember(vm) { mutableStateOf(vm.diskImageName) }
@@ -4278,11 +5234,20 @@ private fun EditVMScreen(
                         },
                         label = { Text("Q35") }
                     )
+                    FilterChip(
+                        selected = machineType == "isapc",
+                        onClick = {
+                            machineType = "isapc"
+                            diskInterface = "IDE"
+                            performancePreset = "Custom"
+                        },
+                        label = { Text("ISA PC (Legacy)") }
+                    )
                     Text(
-                        text = if (machineType == "q35") {
-                            "Q35 emulates a newer Intel chipset and is generally suited to newer guest operating systems."
-                        } else {
-                            "PC (i440FX) emulates the classic QEMU PC chipset and is useful for broad and older guest compatibility."
+                        text = when (machineType) {
+                            "q35" -> "Q35 emulates a newer Intel chipset and is generally suited to newer guest operating systems."
+                            "isapc" -> "ISA PC (Legacy) emulates a very old ISA-based PC for legacy guest operating systems."
+                            else -> "PC (i440FX) emulates the classic QEMU PC chipset and is useful for broad and older guest compatibility."
                         },
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 12.sp
@@ -4394,7 +5359,7 @@ private fun EditVMScreen(
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
-                                text = vm.name,
+                                text = "${vm.name} · RedBox configuration",
                                 fontSize = 12.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -4423,13 +5388,42 @@ private fun EditVMScreen(
                     .verticalScroll(rememberScrollState())
                     .padding(horizontal = 18.dp, vertical = 16.dp)
             ) {
-                Text(
-                    text = "General",
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.Bold
-                )
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(24.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surface
+                    )
+                ) {
+                    Column(modifier = Modifier.padding(20.dp)) {
+                        Text(
+                            text = name.ifBlank { vm.name },
+                            fontSize = 22.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(5.dp))
+                        Text(
+                            text = "$architecture · $ram · $cpuCores core${if (cpuCores == "1") "" else "s"}",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 13.sp
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = when (machineType) {
+                                "isapc" -> "ISA PC (Legacy) · $diskInterface · $displayAdapter"
+                                "q35" -> "Q35 · $diskInterface · $displayAdapter"
+                                else -> "PC (i440FX) · $diskInterface · $displayAdapter"
+                            },
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 12.sp
+                        )
+                    }
+                }
 
-                Spacer(modifier = Modifier.height(10.dp))
+                SettingsGroupTitle(
+                    title = "General",
+                    subtitle = "Name and guest architecture"
+                )
 
                 OutlinedTextField(
                     value = name,
@@ -4481,13 +5475,10 @@ private fun EditVMScreen(
 
                 Spacer(modifier = Modifier.height(20.dp))
 
-                Text(
-                    text = "System Configuration",
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.Bold
+                SettingsGroupTitle(
+                    title = "System",
+                    subtitle = "CPU, memory and emulated machine hardware"
                 )
-
-                Spacer(modifier = Modifier.height(10.dp))
 
                 Card(
                     modifier = Modifier
@@ -4580,16 +5571,20 @@ private fun EditVMScreen(
                             Text("Machine", fontSize = 18.sp, fontWeight = FontWeight.Bold)
                             Spacer(modifier = Modifier.height(3.dp))
                             Text(
-                                if (machineType == "pc") "PC (i440FX)" else "Q35",
+                                when (machineType) {
+                                    "isapc" -> "ISA PC (Legacy)"
+                                    "q35" -> "Q35"
+                                    else -> "PC (i440FX)"
+                                },
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 fontSize = 13.sp,
                                 fontWeight = FontWeight.Medium
                             )
                             Text(
-                                if (machineType == "pc") {
-                                    "Classic chipset · broad legacy compatibility"
-                                } else {
-                                    "Modern chipset · newer guest operating systems"
+                                when (machineType) {
+                                    "isapc" -> "Legacy ISA machine · very old guest operating systems"
+                                    "q35" -> "Modern chipset · newer guest operating systems"
+                                    else -> "Classic chipset · broad legacy compatibility"
                                 },
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 fontSize = 11.sp
@@ -4601,13 +5596,10 @@ private fun EditVMScreen(
 
                 Spacer(modifier = Modifier.height(24.dp))
 
-                Text(
-                    text = "Display Adapter",
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.Bold
+                SettingsGroupTitle(
+                    title = "Display",
+                    subtitle = "Graphics adapter and acceleration"
                 )
-
-                Spacer(modifier = Modifier.height(8.dp))
 
                 Text(
                     text = "Choose the virtual graphics adapter presented to the guest operating system.",
@@ -4673,15 +5665,51 @@ private fun EditVMScreen(
                     }
                 }
 
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surface
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "3D Acceleration",
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = if (displayAdapter == "VirtIO VGA")
+                                    "Enable RedBox's existing VirtIO VirGL/OpenGL ES path. Guest driver support is required."
+                                else
+                                    "Available only when VirtIO VGA is selected.",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 12.sp
+                            )
+                        }
+                        Switch(
+                            checked = threeDAcceleration && displayAdapter == "VirtIO VGA",
+                            onCheckedChange = { threeDAcceleration = it },
+                            enabled = displayAdapter == "VirtIO VGA"
+                        )
+                    }
+                }
+
                 Spacer(modifier = Modifier.height(24.dp))
 
-                Text(
-                    text = "Disk Interface",
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.Bold
+                SettingsGroupTitle(
+                    title = "Disk Interface",
+                    subtitle = "How the primary virtual disk connects to the machine"
                 )
-
-                Spacer(modifier = Modifier.height(8.dp))
 
                 Text(
                     text = "Choose how the virtual hard disk is connected.",
@@ -4710,7 +5738,7 @@ private fun EditVMScreen(
                             selected = diskInterface == "IDE",
                             onClick = {
                                 diskInterface = "IDE"
-                                machineType = "pc"
+                                if (machineType == "q35") machineType = "pc"
                                 performancePreset = "Custom"
                             },
                             label = { Text("IDE") }
@@ -4741,10 +5769,130 @@ private fun EditVMScreen(
 
                 Spacer(modifier = Modifier.height(24.dp))
 
+                SettingsGroupTitle(
+                    title = "Firmware",
+                    subtitle = "Boot firmware used by the virtual machine"
+                )
+
                 Text(
-                    text = "Storage",
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.Bold
+                    text = "Choose Legacy BIOS or RedBox's bundled EDK2 UEFI firmware.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 12.sp
+                )
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilterChip(
+                        selected = firmwareMode == "Legacy BIOS",
+                        onClick = { firmwareMode = "Legacy BIOS" },
+                        label = { Text("Legacy BIOS") }
+                    )
+
+                    FilterChip(
+                        selected = firmwareMode == "UEFI (EDK2)",
+                        onClick = { firmwareMode = "UEFI (EDK2)" },
+                        label = { Text("UEFI (EDK2)") }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Text(
+                    text = if (firmwareMode == "UEFI (EDK2)")
+                        "Uses edk2-x86_64-code.fd with EDK2 variable storage."
+                    else
+                        "Uses the existing legacy BIOS path for maximum compatibility.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 12.sp
+                )
+
+                Spacer(modifier = Modifier.height(24.dp))
+
+                SettingsGroupTitle(
+                    title = "Performance",
+                    subtitle = "Android scheduling priority for the QEMU worker"
+                )
+
+                Text(
+                    text = "Requests a higher Android scheduling priority for the QEMU VM worker.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 12.sp
+                )
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = if (highPriority) "Enabled" else "Disabled",
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "Android can still limit CPU scheduling and background execution.",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 12.sp
+                        )
+                    }
+                    Switch(
+                        checked = highPriority,
+                        onCheckedChange = { highPriority = it }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(24.dp))
+
+                SettingsGroupTitle(
+                    title = "Boot",
+                    subtitle = "Choose which boot device RedBox tries first"
+                )
+
+                Text(
+                    text = "Choose whether the virtual hard disk or Install ISO is tried first.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 12.sp
+                )
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilterChip(
+                        selected = bootPriority == "Hard Disk First",
+                        onClick = { bootPriority = "Hard Disk First" },
+                        label = { Text("Hard Disk First") }
+                    )
+
+                    FilterChip(
+                        selected = bootPriority == "CD/DVD ISO First",
+                        onClick = { bootPriority = "CD/DVD ISO First" },
+                        label = { Text("CD/DVD ISO First") }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Text(
+                    text = if (bootPriority == "CD/DVD ISO First")
+                        "The Install ISO is first when one is attached. The hard disk remains the fallback."
+                    else
+                        "The virtual hard disk is tried before the Install ISO.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 12.sp
+                )
+
+                Spacer(modifier = Modifier.height(24.dp))
+
+                SettingsGroupTitle(
+                    title = "Storage",
+                    subtitle = "Virtual disks, installation media and shared files"
                 )
 
                 Spacer(modifier = Modifier.height(10.dp))
@@ -5108,10 +6256,9 @@ private fun EditVMScreen(
 
                 Spacer(modifier = Modifier.height(24.dp))
 
-                Text(
-                    text = "Network",
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.Bold
+                SettingsGroupTitle(
+                    title = "Network",
+                    subtitle = "Guest network adapter and connection mode"
                 )
 
                 Spacer(modifier = Modifier.height(10.dp))
@@ -5211,10 +6358,9 @@ private fun EditVMScreen(
 
                 Spacer(modifier = Modifier.height(24.dp))
 
-                Text(
-                    text = "Audio",
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.Bold
+                SettingsGroupTitle(
+                    title = "Audio",
+                    subtitle = "Emulated sound hardware"
                 )
 
                 Spacer(modifier = Modifier.height(10.dp))
@@ -5262,10 +6408,9 @@ private fun EditVMScreen(
 
                 Spacer(modifier = Modifier.height(24.dp))
 
-                Text(
-                    text = "Advanced",
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.Bold
+                SettingsGroupTitle(
+                    title = "Advanced",
+                    subtitle = "Guest date and custom QEMU parameters"
                 )
 
                 Spacer(modifier = Modifier.height(10.dp))
@@ -5444,13 +6589,17 @@ private fun EditVMScreen(
                                     machineType = machineType,
                                     diskInterface = diskInterface,
                                     displayAdapter = displayAdapter,
+                                    threeDAcceleration = threeDAcceleration && displayAdapter == "VirtIO VGA",
                                     networkEnabled = networkEnabled,
                                     networkAdapter = networkAdapter,
                                     networkMode = networkMode,
                                     qemuParams = qemuParams.trim(),
                                     biosDate = biosDate.trim().ifBlank { "Default" },
                                     soundCard = soundCard,
-                                    audioBackend = "Default"
+                                    audioBackend = "Default",
+                                    bootPriority = bootPriority,
+                                    firmwareMode = firmwareMode,
+                                    highPriority = highPriority
                                 )
                             )
                         }

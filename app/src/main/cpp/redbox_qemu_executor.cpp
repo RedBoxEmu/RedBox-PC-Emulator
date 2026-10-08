@@ -1154,12 +1154,15 @@ Java_com_rimvydop_redboxpcemulator_MainActivity_nativeQemuStart(
         jstring machineTypeJava,
         jstring diskInterfaceJava,
         jstring displayAdapterJava,
+        jboolean threeDAccelerationJava,
         jboolean networkEnabledJava,
         jstring networkAdapterJava,
         jstring networkModeJava,
         jstring qemuParamsJava,
         jstring biosDateJava,
-        jstring soundCardJava
+        jstring soundCardJava,
+        jstring bootPriorityJava,
+        jstring firmwareModeJava
 ) {
     LOGI("=================================");
     LOGI("RedBox QEMU 11.1.1 SDL WINDOWS + ISO TEST");
@@ -1286,6 +1289,27 @@ Java_com_rimvydop_redboxpcemulator_MainActivity_nativeQemuStart(
                     soundCardJava
             );
 
+    std::string bootPriority =
+            jstringToString(
+                    env,
+                    bootPriorityJava
+            );
+
+    std::string firmwareMode =
+            jstringToString(
+                    env,
+                    firmwareModeJava
+            );
+
+    if (firmwareMode != "UEFI (EDK2)") {
+        firmwareMode = "Legacy BIOS";
+    }
+
+    if (bootPriority != "Hard Disk First" &&
+        bootPriority != "CD/DVD ISO First") {
+        bootPriority = "Hard Disk First";
+    }
+
     if (soundCard != "Intel HDA" &&
         soundCard != "AC97" &&
         soundCard != "Sound Blaster 16") {
@@ -1309,6 +1333,10 @@ Java_com_rimvydop_redboxpcemulator_MainActivity_nativeQemuStart(
         displayAdapter = "Standard VGA";
     }
 
+    const bool threeDAcceleration =
+            threeDAccelerationJava == JNI_TRUE &&
+            displayAdapter == "VirtIO VGA";
+
     if (diskInterface == "VirtIO Block") {
         // Compatibility with VMs saved by an earlier RedBox build.
         diskInterface = "VirtIO Block";
@@ -1328,7 +1356,11 @@ Java_com_rimvydop_redboxpcemulator_MainActivity_nativeQemuStart(
         cpuModel = "Default";
     }
 
-    if (machineType != "q35") {
+    // RedBox v0.2.1: supported x86 machine types.
+    // Keep pc as the safe fallback for old/unknown saved values.
+    if (machineType != "pc" &&
+        machineType != "q35" &&
+        machineType != "isapc") {
         machineType = "pc";
     }
 
@@ -1418,10 +1450,12 @@ Java_com_rimvydop_redboxpcemulator_MainActivity_nativeQemuStart(
             networkMode.c_str()
     );
 
-    if (diskUri.empty()) {
-        return env->NewStringUTF(
-                "QEMU Disk Test Failed: no disk image selected"
-        );
+    const bool hasMainDisk = !diskUri.empty();
+
+    if (hasMainDisk) {
+        LOGI("Main disk selected");
+    } else {
+        LOGI("No main disk selected; starting VM without a primary hard disk");
     }
 
     /*
@@ -1627,82 +1661,57 @@ Java_com_rimvydop_redboxpcemulator_MainActivity_nativeQemuStart(
 
     LOGI("QEMU firmware is ready");
 
-    int diskFd =
-            openAndroidFd(
-                    env,
-                    thiz,
-                    diskUri
+    int diskFd = -1;
+    int qemuRwFd = -1;
+
+    if (hasMainDisk) {
+        diskFd =
+                openAndroidFd(
+                        env,
+                        thiz,
+                        diskUri
+                );
+
+        if (diskFd < 0) {
+            return env->NewStringUTF(
+                    "QEMU Disk Test Failed: could not open disk image"
             );
+        }
 
-    if (diskFd < 0) {
-        return env->NewStringUTF(
-                "QEMU Disk Test Failed: could not open disk image"
-        );
-    }
+        /*
+         * Android SAF gives RedBox a writable O_RDWR descriptor.
+         * Keep the Java-owned descriptor open until QEMU returns and give
+         * QEMU its own duplicate through fd-set 1.
+         */
+        qemuRwFd = dup(diskFd);
 
-    /*
-     * Android SAF gives RedBox a writable O_RDWR descriptor.
-     *
-     * RedBox's Android-specific QEMU patch allows that O_RDWR descriptor
-     * to satisfy a block-layer O_RDONLY fd-set request as well. Therefore
-     * we only need one private descriptor for QEMU.
-     *
-     * Keep the Java-owned diskFd open until QEMU eventually returns.
-     */
-
-    int qemuRwFd =
-            dup(diskFd);
-
-    if (qemuRwFd < 0) {
-        closeAndroidFd(
-                env,
-                thiz,
-                diskFd
-        );
-
-        return env->NewStringUTF(
-                "QEMU Disk Test Failed: could not duplicate Android fd"
-        );
-    }
-
-    int fdFlags =
-            fcntl(
-                    qemuRwFd,
-                    F_GETFD
+        if (qemuRwFd < 0) {
+            closeAndroidFd(env, thiz, diskFd);
+            return env->NewStringUTF(
+                    "QEMU Disk Test Failed: could not duplicate Android fd"
             );
+        }
 
-    if (fdFlags < 0 ||
-        fcntl(
+        int fdFlags = fcntl(qemuRwFd, F_GETFD);
+
+        if (fdFlags < 0 ||
+            fcntl(qemuRwFd, F_SETFD, fdFlags & ~FD_CLOEXEC) < 0) {
+            if (qemuRwFd >= 0) close(qemuRwFd);
+            if (diskFd >= 0) closeAndroidFd(env, thiz, diskFd);
+            return env->NewStringUTF(
+                    "QEMU Disk Test Failed: could not clear FD_CLOEXEC"
+            );
+        }
+
+        int rwStatusFlags = fcntl(qemuRwFd, F_GETFL);
+
+        LOGI(
+                "Android Java fd=%d, QEMU inherited fd=%d flags=0x%x, FD_CLOEXEC cleared",
+                diskFd,
                 qemuRwFd,
-                F_SETFD,
-                fdFlags & ~FD_CLOEXEC
-        ) < 0) {
-
-        close(qemuRwFd);
-
-        closeAndroidFd(
-                env,
-                thiz,
-                diskFd
-        );
-
-        return env->NewStringUTF(
-                "QEMU Disk Test Failed: could not clear FD_CLOEXEC"
+                rwStatusFlags
         );
     }
-
-    int rwStatusFlags =
-            fcntl(
-                    qemuRwFd,
-                    F_GETFL
-            );
-
-    LOGI(
-            "Android Java fd=%d, QEMU inherited fd=%d flags=0x%x, FD_CLOEXEC cleared",
-            diskFd,
-            qemuRwFd,
-            rwStatusFlags
-    );
 
     /*
      * Optional CD-ROM / ISO.
@@ -1722,13 +1731,8 @@ Java_com_rimvydop_redboxpcemulator_MainActivity_nativeQemuStart(
                 );
 
         if (isoFd < 0) {
-            close(qemuRwFd);
-
-            closeAndroidFd(
-                    env,
-                    thiz,
-                    diskFd
-            );
+            if (qemuRwFd >= 0) close(qemuRwFd);
+            if (diskFd >= 0) closeAndroidFd(env, thiz, diskFd);
 
             return env->NewStringUTF(
                     "QEMU ISO Test Failed: could not open ISO image"
@@ -1744,13 +1748,8 @@ Java_com_rimvydop_redboxpcemulator_MainActivity_nativeQemuStart(
                     isoFd
             );
 
-            close(qemuRwFd);
-
-            closeAndroidFd(
-                    env,
-                    thiz,
-                    diskFd
-            );
+            if (qemuRwFd >= 0) close(qemuRwFd);
+            if (diskFd >= 0) closeAndroidFd(env, thiz, diskFd);
 
             return env->NewStringUTF(
                     "QEMU ISO Test Failed: could not duplicate ISO fd"
@@ -1778,13 +1777,8 @@ Java_com_rimvydop_redboxpcemulator_MainActivity_nativeQemuStart(
                     isoFd
             );
 
-            close(qemuRwFd);
-
-            closeAndroidFd(
-                    env,
-                    thiz,
-                    diskFd
-            );
+            if (qemuRwFd >= 0) close(qemuRwFd);
+            if (diskFd >= 0) closeAndroidFd(env, thiz, diskFd);
 
             return env->NewStringUTF(
                     "QEMU ISO Test Failed: could not clear ISO FD_CLOEXEC"
@@ -1821,8 +1815,8 @@ Java_com_rimvydop_redboxpcemulator_MainActivity_nativeQemuStart(
             if (isoFd >= 0) {
                 closeAndroidFd(env, thiz, isoFd);
             }
-            close(qemuRwFd);
-            closeAndroidFd(env, thiz, diskFd);
+            if (qemuRwFd >= 0) close(qemuRwFd);
+            if (diskFd >= 0) closeAndroidFd(env, thiz, diskFd);
             return env->NewStringUTF(
                     "QEMU Shared Drive Failed: could not open shared disk image"
             );
@@ -1838,8 +1832,8 @@ Java_com_rimvydop_redboxpcemulator_MainActivity_nativeQemuStart(
             if (isoFd >= 0) {
                 closeAndroidFd(env, thiz, isoFd);
             }
-            close(qemuRwFd);
-            closeAndroidFd(env, thiz, diskFd);
+            if (qemuRwFd >= 0) close(qemuRwFd);
+            if (diskFd >= 0) closeAndroidFd(env, thiz, diskFd);
             return env->NewStringUTF(
                     "QEMU Shared Drive Failed: could not duplicate shared disk fd"
             );
@@ -1856,8 +1850,8 @@ Java_com_rimvydop_redboxpcemulator_MainActivity_nativeQemuStart(
             if (isoFd >= 0) {
                 closeAndroidFd(env, thiz, isoFd);
             }
-            close(qemuRwFd);
-            closeAndroidFd(env, thiz, diskFd);
+            if (qemuRwFd >= 0) close(qemuRwFd);
+            if (diskFd >= 0) closeAndroidFd(env, thiz, diskFd);
             return env->NewStringUTF(
                     "QEMU Shared Drive Failed: could not clear shared disk FD_CLOEXEC"
             );
@@ -1887,8 +1881,8 @@ Java_com_rimvydop_redboxpcemulator_MainActivity_nativeQemuStart(
             if (sharedDiskFd >= 0) closeAndroidFd(env, thiz, sharedDiskFd);
             if (qemuIsoFd >= 0) close(qemuIsoFd);
             if (isoFd >= 0) closeAndroidFd(env, thiz, isoFd);
-            close(qemuRwFd);
-            closeAndroidFd(env, thiz, diskFd);
+            if (qemuRwFd >= 0) close(qemuRwFd);
+            if (diskFd >= 0) closeAndroidFd(env, thiz, diskFd);
             return env->NewStringUTF(
                     "QEMU Driver ISO Failed: could not open CD-ROM 2 image"
             );
@@ -1902,8 +1896,8 @@ Java_com_rimvydop_redboxpcemulator_MainActivity_nativeQemuStart(
             if (sharedDiskFd >= 0) closeAndroidFd(env, thiz, sharedDiskFd);
             if (qemuIsoFd >= 0) close(qemuIsoFd);
             if (isoFd >= 0) closeAndroidFd(env, thiz, isoFd);
-            close(qemuRwFd);
-            closeAndroidFd(env, thiz, diskFd);
+            if (qemuRwFd >= 0) close(qemuRwFd);
+            if (diskFd >= 0) closeAndroidFd(env, thiz, diskFd);
             return env->NewStringUTF(
                     "QEMU Driver ISO Failed: could not duplicate CD-ROM 2 fd"
             );
@@ -1919,8 +1913,8 @@ Java_com_rimvydop_redboxpcemulator_MainActivity_nativeQemuStart(
             if (sharedDiskFd >= 0) closeAndroidFd(env, thiz, sharedDiskFd);
             if (qemuIsoFd >= 0) close(qemuIsoFd);
             if (isoFd >= 0) closeAndroidFd(env, thiz, isoFd);
-            close(qemuRwFd);
-            closeAndroidFd(env, thiz, diskFd);
+            if (qemuRwFd >= 0) close(qemuRwFd);
+            if (diskFd >= 0) closeAndroidFd(env, thiz, diskFd);
             return env->NewStringUTF(
                     "QEMU Driver ISO Failed: could not clear CD-ROM 2 FD_CLOEXEC"
             );
@@ -1943,12 +1937,42 @@ Java_com_rimvydop_redboxpcemulator_MainActivity_nativeQemuStart(
     arguments.emplace_back(appFilesDirectory);
 
     /*
-     * Graphics Part 5C:
-     * VirtIO VGA uses QEMU's VirGL/OpenGL device and SDL's OpenGL ES path.
-     * All other adapters stay on the known-good SDL 2D path.
+     * RedBox v0.2.0 Stage 4: real EDK2 UEFI firmware.
+     * Existing VMs default to Legacy BIOS. UEFI uses the x86_64 EDK2 code
+     * image already bundled in pc-bios plus the EDK2 variable store.
+     * prepareQemuFirmware() extracts both files into appFilesDirectory.
      */
-    const bool useVirglGraphics =
-            displayAdapter == "VirtIO VGA";
+    if (firmwareMode == "UEFI (EDK2)") {
+        const std::string uefiCodePath =
+                appFilesDirectory + "/edk2-x86_64-code.fd";
+        const std::string uefiVarsPath =
+                appFilesDirectory + "/edk2-i386-vars.fd";
+
+        arguments.emplace_back("-drive");
+        arguments.emplace_back(
+                "if=pflash,format=raw,readonly=on,file=" + uefiCodePath
+        );
+        arguments.emplace_back("-drive");
+        arguments.emplace_back(
+                "if=pflash,format=raw,file=" + uefiVarsPath
+        );
+
+        LOGI(
+                "Firmware mode: UEFI (EDK2), code=%s, vars=%s",
+                uefiCodePath.c_str(),
+                uefiVarsPath.c_str()
+        );
+    } else {
+        LOGI("Firmware mode: Legacy BIOS");
+    }
+
+    /*
+     * RedBox v0.2.0 Stage 6: optional VirtIO 3D acceleration.
+     * Only VirtIO VGA may enter the existing VirGL/OpenGL ES path.
+     * With the toggle off, VirtIO VGA uses the normal non-GL virtio-vga
+     * device and SDL stays on the known-good 2D path.
+     */
+    const bool useVirglGraphics = threeDAcceleration;
 
     arguments.emplace_back("-display");
     arguments.emplace_back(
@@ -1958,8 +1982,9 @@ Java_com_rimvydop_redboxpcemulator_MainActivity_nativeQemuStart(
     );
 
     LOGI(
-            "Graphics Part 5C: adapter=%s, SDL GL=%s",
+            "Stage 6 graphics: adapter=%s, 3D=%s, SDL GL=%s",
             displayAdapter.c_str(),
+            threeDAcceleration ? "enabled" : "disabled",
             useVirglGraphics ? "OpenGL ES" : "off"
     );
 
@@ -1982,13 +2007,12 @@ Java_com_rimvydop_redboxpcemulator_MainActivity_nativeQemuStart(
         arguments.emplace_back("-device");
         arguments.emplace_back("bochs-display");
     } else if (displayAdapter == "VirtIO VGA") {
-        /*
-         * GL-enabled VirtIO VGA. This activates QEMU's virglrenderer path.
-         * The non-GL virtio-vga device is intentionally not used here so
-         * this selection becomes RedBox's first real VirGL runtime test.
-         */
         arguments.emplace_back("-device");
-        arguments.emplace_back("virtio-vga-gl");
+        arguments.emplace_back(
+                threeDAcceleration
+                ? "virtio-vga-gl"
+                : "virtio-vga"
+        );
     } else if (displayAdapter == "Cirrus VGA") {
         arguments.emplace_back("-vga");
         arguments.emplace_back("cirrus");
@@ -2086,13 +2110,15 @@ Java_com_rimvydop_redboxpcemulator_MainActivity_nativeQemuStart(
      * The RedBox Android QEMU patch permits this descriptor to satisfy
      * an O_RDONLY request while preserving normal matching elsewhere.
      */
-    std::string addFdArgument =
-            "fd=" +
-            std::to_string(qemuRwFd) +
-            ",set=1,opaque=redboxdisk";
+    if (qemuRwFd >= 0) {
+        std::string addFdArgument =
+                "fd=" +
+                std::to_string(qemuRwFd) +
+                ",set=1,opaque=redboxdisk";
 
-    arguments.emplace_back("-add-fd");
-    arguments.emplace_back(addFdArgument);
+        arguments.emplace_back("-add-fd");
+        arguments.emplace_back(addFdArgument);
+    }
 
     if (qemuIsoFd >= 0) {
         std::string addIsoFdArgument =
@@ -2137,36 +2163,57 @@ Java_com_rimvydop_redboxpcemulator_MainActivity_nativeQemuStart(
     // while VirtIO Block is selected, keep a small AHCI controller only for the
     // virtual CD-ROM so Windows installers/driver ISOs continue to work.
     const bool needsAhciController =
-            diskInterface == "AHCI" ||
+            (diskInterface == "AHCI" &&
+             (hasMainDisk || qemuIsoFd >= 0 || qemuDriverIsoFd >= 0 ||
+              qemuSharedDiskFd >= 0 || sharedFolderEnabled)) ||
             (diskInterface == "VirtIO Block" &&
-             (qemuIsoFd >= 0 || qemuDriverIsoFd >= 0 || qemuSharedDiskFd >= 0 || sharedFolderEnabled));
+             (qemuIsoFd >= 0 || qemuDriverIsoFd >= 0 ||
+              qemuSharedDiskFd >= 0 || sharedFolderEnabled));
 
     if (needsAhciController) {
         arguments.emplace_back("-device");
         arguments.emplace_back("ich9-ahci,id=ahci");
     }
 
-    std::string diskDriveArgument =
-            "file=/dev/fdset/1,if=none,id=redboxdisk,format=" +
-            diskFormat;
+    const bool bootIsoFirst =
+            qemuIsoFd >= 0 &&
+            (!hasMainDisk || bootPriority == "CD/DVD ISO First");
+    const int diskBootIndex = bootIsoFirst ? 2 : 1;
+    const int isoBootIndex = bootIsoFirst ? 1 : 2;
 
-    arguments.emplace_back("-drive");
-    arguments.emplace_back(diskDriveArgument);
+    LOGI(
+            "Boot priority: %s (main disk=%s, disk bootindex=%d, install ISO bootindex=%d)",
+            bootPriority.c_str(),
+            hasMainDisk ? "present" : "none",
+            diskBootIndex,
+            isoBootIndex
+    );
 
-    arguments.emplace_back("-device");
+    if (hasMainDisk && qemuRwFd >= 0) {
+        std::string diskDriveArgument =
+                "file=/dev/fdset/1,if=none,id=redboxdisk,format=" +
+                diskFormat;
 
-    if (diskInterface == "IDE") {
-        arguments.emplace_back(
-                "ide-hd,drive=redboxdisk,bus=ide.0,bootindex=1"
-        );
-    } else if (diskInterface == "VirtIO Block") {
-        arguments.emplace_back(
-                "virtio-blk-pci,drive=redboxdisk,bootindex=1"
-        );
+        arguments.emplace_back("-drive");
+        arguments.emplace_back(diskDriveArgument);
+
+        arguments.emplace_back("-device");
+
+        if (diskInterface == "IDE") {
+            arguments.emplace_back(
+                    "ide-hd,drive=redboxdisk,bus=ide.0,bootindex=" + std::to_string(diskBootIndex)
+            );
+        } else if (diskInterface == "VirtIO Block") {
+            arguments.emplace_back(
+                    "virtio-blk-pci,drive=redboxdisk,bootindex=" + std::to_string(diskBootIndex)
+            );
+        } else {
+            arguments.emplace_back(
+                    "ide-hd,drive=redboxdisk,bus=ahci.0,bootindex=" + std::to_string(diskBootIndex)
+            );
+        }
     } else {
-        arguments.emplace_back(
-                "ide-hd,drive=redboxdisk,bus=ahci.0,bootindex=1"
-        );
+        LOGI("Primary hard disk device omitted");
     }
 
     /*
@@ -2245,12 +2292,12 @@ Java_com_rimvydop_redboxpcemulator_MainActivity_nativeQemuStart(
 
         if (diskInterface == "IDE") {
             arguments.emplace_back(
-                    "ide-cd,drive=redboxiso,bus=ide.1,bootindex=2"
+                    "ide-cd,drive=redboxiso,bus=ide.1,bootindex=" + std::to_string(isoBootIndex)
             );
         } else {
             // AHCI is also used for optical media when the main disk is VirtIO.
             arguments.emplace_back(
-                    "ide-cd,drive=redboxiso,bus=ahci.1,bootindex=2"
+                    "ide-cd,drive=redboxiso,bus=ahci.1,bootindex=" + std::to_string(isoBootIndex)
             );
         }
     }
@@ -2396,13 +2443,13 @@ Java_com_rimvydop_redboxpcemulator_MainActivity_nativeQemuStart(
             );
         }
 
-        close(qemuRwFd);
+        if (qemuRwFd >= 0) {
+            close(qemuRwFd);
+        }
 
-        closeAndroidFd(
-                env,
-                thiz,
-                diskFd
-        );
+        if (diskFd >= 0) {
+            closeAndroidFd(env, thiz, diskFd);
+        }
 
         return env->NewStringUTF(
                 "QEMU ADD-FD Test Failed: could not capture QEMU stderr"
@@ -2456,11 +2503,9 @@ Java_com_rimvydop_redboxpcemulator_MainActivity_nativeQemuStart(
         );
     }
 
-    closeAndroidFd(
-            env,
-            thiz,
-            diskFd
-    );
+    if (diskFd >= 0) {
+        closeAndroidFd(env, thiz, diskFd);
+    }
 
     std::string result =
             "QEMU 11.1.1 Windows + Shared Storage Test Finished (status " +
@@ -2574,12 +2619,15 @@ Java_com_rimvydop_redboxpcemulator_QemuService_nativeQemuStart(
         jstring machineTypeJava,
         jstring diskInterfaceJava,
         jstring displayAdapterJava,
+        jboolean threeDAccelerationJava,
         jboolean networkEnabledJava,
         jstring networkAdapterJava,
         jstring networkModeJava,
         jstring qemuParamsJava,
         jstring biosDateJava,
-        jstring soundCardJava
+        jstring soundCardJava,
+        jstring bootPriorityJava,
+        jstring firmwareModeJava
 ) {
     LOGI(
             "QemuService nativeQemuStart() bridge called in PID %d",
@@ -2606,11 +2654,14 @@ Java_com_rimvydop_redboxpcemulator_QemuService_nativeQemuStart(
                     machineTypeJava,
                     diskInterfaceJava,
                     displayAdapterJava,
+                    threeDAccelerationJava,
                     networkEnabledJava,
                     networkAdapterJava,
                     networkModeJava,
                     qemuParamsJava,
                     biosDateJava,
-                    soundCardJava
+                    soundCardJava,
+                    bootPriorityJava,
+                    firmwareModeJava
             );
 }

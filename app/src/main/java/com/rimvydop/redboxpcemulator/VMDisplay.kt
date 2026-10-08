@@ -11,6 +11,7 @@ import org.libsdl.app.SDLActivity
 @Composable
 fun VMDisplay(
     modifier: Modifier = Modifier,
+    refreshRequest: Int = 0,
     onSurfaceReady: (Surface) -> Unit = {},
     onSurfaceDestroyed: () -> Unit = {}
 ) {
@@ -127,6 +128,35 @@ fun VMDisplay(
                         }
                     }
                 )
+            }
+        },
+        update = { surfaceView ->
+            // RedBox v0.2.1 - manual display refresh.
+            // Reading refreshRequest makes AndroidView's update block run when
+            // the toolbar Refresh button increments it. The existing SDL
+            // Surface is preserved; we simply resend its current metadata to
+            // QEMU so the display bridge can redraw without restarting the VM.
+            if (refreshRequest > 0) {
+                val holder = surfaceView.holder
+                val surface = holder.surface
+
+                if (surface.isValid) {
+                    val frame = holder.surfaceFrame
+                    val activity = surfaceView.context as? MainActivity
+
+                    activity?.setQemuDisplaySurface(
+                        surface = surface,
+                        width = frame.width(),
+                        height = frame.height(),
+                        pixelFormat = 0,
+                        refreshRate = surfaceView.display?.refreshRate ?: 60f
+                    )
+
+                    Log.d(
+                        "RedBoxDisplay",
+                        "Manual display refresh sent to QEMU: ${frame.width()}x${frame.height()}"
+                    )
+                }
             }
         }
     )

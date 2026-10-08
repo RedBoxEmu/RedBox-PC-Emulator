@@ -73,6 +73,7 @@ fun CreateVMScreen(
     var machineType by remember { mutableStateOf("pc") }
     var diskInterface by remember { mutableStateOf("AHCI") }
     var displayAdapter by remember { mutableStateOf("Standard VGA") }
+    var threeDAcceleration by remember { mutableStateOf(false) }
 
     // RedBox blank disk creator.
     var showCreateDiskDialog by remember { mutableStateOf(false) }
@@ -90,6 +91,9 @@ fun CreateVMScreen(
     var biosDate by remember { mutableStateOf("Default") }
     var soundCard by remember { mutableStateOf("Intel HDA") }
     var audioBackend by remember { mutableStateOf("Default") }
+    var bootPriority by remember { mutableStateOf("Hard Disk First") }
+    var firmwareMode by remember { mutableStateOf("Legacy BIOS") }
+    var highPriority by remember { mutableStateOf(false) }
 
     var diskImage by remember { mutableStateOf("") }
     var diskImageName by remember { mutableStateOf("") }
@@ -116,6 +120,7 @@ fun CreateVMScreen(
 
     val context = androidx.compose.ui.platform.LocalContext.current
     val scrollState = rememberScrollState()
+    var createStep by remember { mutableStateOf(0) }
 
     val createDiskLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/octet-stream")
@@ -578,6 +583,15 @@ fun CreateVMScreen(
                         },
                         label = { Text("Q35") }
                     )
+                    FilterChip(
+                        selected = machineType == "isapc",
+                        onClick = {
+                            machineType = "isapc"
+                            diskInterface = "IDE"
+                            performancePreset = "Custom"
+                        },
+                        label = { Text("ISA PC (Legacy)") }
+                    )
                 }
             },
             confirmButton = {
@@ -673,19 +687,33 @@ fun CreateVMScreen(
         )
     }
 
+    val stepTitles = listOf("Basics", "Storage", "Devices", "Advanced")
+
     Scaffold(
         containerColor = background,
         topBar = {
             TopAppBar(
                 title = {
-                    Text(
-                        text = "Create Virtual Machine",
-                        color = Color.White,
-                        fontWeight = FontWeight.Bold
-                    )
+                    Column {
+                        Text(
+                            text = "New Virtual Machine",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 19.sp
+                        )
+                        Text(
+                            text = "Step ${createStep + 1} of ${stepTitles.size} · ${stepTitles[createStep]}",
+                            color = secondaryText,
+                            fontSize = 11.sp
+                        )
+                    }
                 },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
+                    IconButton(
+                        onClick = {
+                            if (createStep > 0) createStep-- else onBack()
+                        }
+                    ) {
                         Text(
                             text = "‹",
                             color = Color.White,
@@ -700,6 +728,122 @@ fun CreateVMScreen(
                     navigationIconContentColor = Color.White
                 )
             )
+        },
+        bottomBar = {
+            Surface(
+                color = Color(0xFF0D0F13),
+                shadowElevation = 12.dp
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        stepTitles.forEachIndexed { index, title ->
+                            Surface(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(4.dp),
+                                shape = RoundedCornerShape(99.dp),
+                                color = if (index <= createStep) red else Color(0xFF2A2D34)
+                            ) {}
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        if (createStep > 0) {
+                            OutlinedButton(
+                                onClick = { createStep-- },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Back")
+                            }
+                        }
+
+                        if (createStep < stepTitles.lastIndex) {
+                            Button(
+                                onClick = { createStep++ },
+                                enabled = if (createStep == 0) vmName.isNotBlank() else true,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(50.dp),
+                                shape = RoundedCornerShape(15.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = red,
+                                    contentColor = Color.White,
+                                    disabledContainerColor = Color(0xFF3A2024),
+                                    disabledContentColor = Color(0xFF777177)
+                                )
+                            ) {
+                                Text("Continue", fontWeight = FontWeight.Bold)
+                            }
+                        } else {
+                            Button(
+                                onClick = {
+                                    val newVM = VMModel(
+                                        name = vmName,
+                                        architecture = architecture,
+                                        ram = ram,
+                                        cpuCores = cpuCores,
+                                        diskImage = diskImage,
+                                        diskImageName = diskImageName,
+                                        isoImage = isoImage,
+                                        isoImageName = isoImageName,
+                                        driverIsoImage = driverIsoImage,
+                                        driverIsoImageName = driverIsoImageName,
+                                        sharedDiskImage = sharedDiskImage,
+                                        sharedDiskImageName = sharedDiskImageName,
+                                        sharedFolderEnabled = sharedFolderEnabled,
+                                        sharedFolderLastFileName = sharedFolderLastFileName,
+                                        performancePreset = performancePreset,
+                                        cpuModel = cpuModel,
+                                        cpuFlags = cpuFlags,
+                                        tcgCache = tcgCache,
+                                        multiThreadedTcg = multiThreadedTcg,
+                                        machineType = machineType,
+                                        diskInterface = diskInterface,
+                                        displayAdapter = displayAdapter,
+                                        threeDAcceleration = threeDAcceleration && displayAdapter == "VirtIO VGA",
+                                        networkEnabled = networkEnabled,
+                                        networkAdapter = networkAdapter,
+                                        networkMode = networkMode,
+                                        qemuParams = qemuParams.trim(),
+                                        biosDate = biosDate.trim().ifBlank { "Default" },
+                                        soundCard = soundCard,
+                                        audioBackend = audioBackend,
+                                        bootPriority = bootPriority,
+                                        firmwareMode = firmwareMode,
+                                        highPriority = highPriority
+                                    )
+                                    onVMCreated(newVM)
+                                },
+                                enabled = vmName.isNotBlank(),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(50.dp),
+                                shape = RoundedCornerShape(15.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = red,
+                                    contentColor = Color.White,
+                                    disabledContainerColor = Color(0xFF3A2024),
+                                    disabledContentColor = Color(0xFF777177)
+                                )
+                            ) {
+                                Text("Create VM", fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+            }
         }
     ) { innerPadding ->
         Column(
@@ -708,807 +852,667 @@ fun CreateVMScreen(
                 .background(background)
                 .verticalScroll(scrollState)
                 .padding(innerPadding)
-                .padding(horizontal = 20.dp, vertical = 18.dp),
-            verticalArrangement = Arrangement.Top
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Text(
-                text = "General",
-                color = Color.White,
-                fontSize = 24.sp,
-                fontWeight = FontWeight.Bold
-            )
-
-            Spacer(modifier = Modifier.height(5.dp))
-
-            Text(
-                text = "Name and architecture for this virtual machine.",
-                color = secondaryText,
-                fontSize = 14.sp
-            )
-
-            Spacer(modifier = Modifier.height(22.dp))
-
-            SectionCard(
-                title = "VM Name",
-                subtitle = "Give your virtual machine a name.",
-                surfaceColor = surface
-            ) {
-                OutlinedTextField(
-                    value = vmName,
-                    onValueChange = { vmName = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    textStyle = androidx.compose.ui.text.TextStyle(
-                        color = Color.White
-                    ),
-                    placeholder = {
-                        Text(
-                            text = "Example: Windows 10",
-                            color = Color(0xFF666B75)
-                        )
-                    },
-                    singleLine = true,
-                    shape = RoundedCornerShape(14.dp)
-                )
-            }
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            SectionCard(
-                title = "Architecture",
-                subtitle = "Choose the CPU architecture for this VM.",
-                surfaceColor = surface
-            ) {
-                BoxSelector(
-                    value = architecture,
-                    expanded = architectureMenu,
-                    onClick = { architectureMenu = true },
-                    surfaceColor = surfaceVariant,
-                    accent = red
-                )
-
-                DropdownMenu(
-                    expanded = architectureMenu,
-                    onDismissRequest = { architectureMenu = false }
-                ) {
-                    listOf("x86_64", "x86", "ARM64", "ARM").forEach { option ->
-                        DropdownMenuItem(
-                            text = { Text(option) },
-                            onClick = {
-                                architecture = option
-                                architectureMenu = false
-                            }
-                        )
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(22.dp))
-
-            Text(
-                text = "System Configuration",
-                color = Color.White,
-                fontSize = 24.sp,
-                fontWeight = FontWeight.Bold
-            )
-
-            Spacer(modifier = Modifier.height(5.dp))
-
-            Text(
-                text = "Configure CPU, RAM and machine type.",
-                color = secondaryText,
-                fontSize = 14.sp
-            )
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { showCpuOptions = true },
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = surface)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(18.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("CPU", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                        Text(
-                            "$cpuCores · $cpuModel · $performancePreset",
-                            color = secondaryText,
-                            fontSize = 12.sp
-                        )
-                    }
-                    Text("›", color = red, fontSize = 30.sp)
-                }
-            }
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { showRamOptions = true },
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = surface)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(18.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("RAM", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                        Text(ram, color = secondaryText, fontSize = 12.sp)
-                    }
-                    Text("›", color = red, fontSize = 30.sp)
-                }
-            }
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { showMachineOptions = true },
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = surface)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(18.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Machine", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                        Text(
-                            if (machineType == "pc") "PC (i440FX)" else "Q35",
-                            color = secondaryText,
-                            fontSize = 12.sp
-                        )
-                    }
-                    Text("›", color = red, fontSize = 30.sp)
-                }
-            }
-
-            Spacer(modifier = Modifier.height(22.dp))
-
-            Text(
-                text = "Storage",
-                color = Color.White,
-                fontSize = 24.sp,
-                fontWeight = FontWeight.Bold
-            )
-
-            Spacer(modifier = Modifier.height(5.dp))
-
-            Text(
-                text = "Virtual disk interface and attached media.",
-                color = secondaryText,
-                fontSize = 14.sp
-            )
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            SectionCard(
-                title = "Disk Interface",
-                subtitle = "IDE/AHCI are compatible choices. VirtIO Block is the modern high-performance option.",
-                surfaceColor = surface
-            ) {
-                BoxSelector(
-                    value = diskInterface,
-                    expanded = diskInterfaceMenu,
-                    onClick = { diskInterfaceMenu = true },
-                    surfaceColor = surfaceVariant,
-                    accent = red
-                )
-
-                DropdownMenu(
-                    expanded = diskInterfaceMenu,
-                    onDismissRequest = { diskInterfaceMenu = false }
-                ) {
-                    listOf("AHCI", "IDE", "VirtIO Block").forEach { option ->
-                        DropdownMenuItem(
-                            text = { Text(option) },
-                            onClick = {
-                                diskInterface = option
-
-                                // Q35 does not provide the legacy IDE layout we use.
-                                // Selecting IDE automatically keeps the VM on PC/i440FX.
-                                if (diskInterface == "IDE") {
-                                    machineType = "pc"
-                                    performancePreset = "Custom"
-                                }
-
-                                diskInterfaceMenu = false
-                            }
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(10.dp))
-                Text(
-                    text = when (diskInterface) {
-                        "IDE" -> "IDE uses PC (i440FX) machine mode for maximum compatibility."
-                        "VirtIO Block" -> "VirtIO Block reduces legacy disk emulation overhead, but Windows needs a VirtIO storage driver before its system disk can boot with it."
-                        else -> "AHCI provides SATA-style compatibility for supported guests."
-                    },
-                    color = secondaryText,
-                    fontSize = 12.sp
-                )
-            }
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            FileSection(
-                title = "Disk Image",
-                description = "Select an existing disk image, or create a new blank RedBox disk.",
-                fileName = diskImageName,
-                selected = diskImage.isNotEmpty(),
-                buttonText = if (diskImage.isEmpty()) {
-                    "Select Disk Image"
-                } else {
-                    "Change Disk Image"
-                },
-                surfaceColor = surface,
-                accent = red,
-                onSelect = {
-                    diskPicker.launch(
-                        arrayOf(
-                            "application/octet-stream",
-                            "application/x-qcow2",
-                            "*/*"
-                        )
-                    )
-                }
-            )
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            OutlinedButton(
-                onClick = { showCreateDiskDialog = true },
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("Create New Disk")
-            }
-
-            Text(
-                text = "Creates a blank sparse RAW .img disk. It works with IDE, AHCI and VirtIO Block.",
-                color = secondaryText,
-                fontSize = 12.sp,
-                modifier = Modifier.padding(top = 7.dp)
-            )
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            FileSection(
-                title = "ISO Image",
-                description = "Optional boot/install media.",
-                fileName = isoImageName,
-                selected = isoImage.isNotEmpty(),
-                buttonText = if (isoImage.isEmpty()) {
-                    "Select ISO Image"
-                } else {
-                    "Change ISO Image"
-                },
-                surfaceColor = surface,
-                accent = red,
-                onSelect = {
-                    isoPicker.launch(
-                        arrayOf(
-                            "application/x-iso9660-image",
-                            "application/octet-stream",
-                            "*/*"
-                        )
-                    )
-                }
-            )
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            FileSection(
-                title = "CD-ROM 2 / Driver ISO",
-                description = "Optional second ISO, useful for VirtIO drivers during Windows Setup.",
-                fileName = driverIsoImageName,
-                selected = driverIsoImage.isNotEmpty(),
-                buttonText = if (driverIsoImage.isEmpty()) {
-                    "Select Driver ISO"
-                } else {
-                    "Change Driver ISO"
-                },
-                surfaceColor = surface,
-                accent = red,
-                onSelect = {
-                    driverIsoPicker.launch(
-                        arrayOf(
-                            "application/x-iso9660-image",
-                            "application/octet-stream",
-                            "*/*"
-                        )
-                    )
-                }
-            )
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            FileSection(
-                title = "Shared Hard Drive",
-                description = "Optional second virtual disk for moving files into the guest.",
-                fileName = sharedDiskImageName,
-                selected = sharedDiskImage.isNotEmpty(),
-                buttonText = if (sharedDiskImage.isEmpty()) {
-                    "Select Shared Drive"
-                } else {
-                    "Change Shared Drive"
-                },
-                surfaceColor = surface,
-                accent = red,
-                onSelect = {
-                    sharedDiskPicker.launch(
-                        arrayOf(
-                            "application/octet-stream",
-                            "application/x-qcow2",
-                            "*/*"
-                        )
-                    )
-                }
-            )
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            SectionCard(
-                title = "Shared Folder",
-                subtitle = "Import Android files into a Windows-readable QEMU VVFAT drive.",
-                surfaceColor = surface
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = if (sharedFolderEnabled) "Enabled" else "Disabled",
-                            color = Color.White,
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Text(
-                            text = if (sharedFolderLastFileName.isNotEmpty()) {
-                                "Last added: $sharedFolderLastFileName"
-                            } else {
-                                "Add an MP3, EXE, image, document, or other file."
-                            },
-                            color = secondaryText,
-                            fontSize = 12.sp
-                        )
-                    }
-
-                    Switch(
-                        checked = sharedFolderEnabled,
-                        onCheckedChange = {
-                            sharedFolderEnabled = it
-                            if (it) {
-                                sharedDiskImage = ""
-                                sharedDiskImageName = ""
-                            }
-                        }
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                Button(
-                    onClick = {
-                        sharedFolderFilePicker.launch(arrayOf("*/*"))
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = red,
-                        contentColor = Color.White
-                    )
-                ) {
-                    Text("Add File to Shared Folder")
-                }
-            }
-
-            Spacer(modifier = Modifier.height(22.dp))
-
-            Text(
-                text = "Display",
-                color = Color.White,
-                fontSize = 24.sp,
-                fontWeight = FontWeight.Bold
-            )
-
-            Spacer(modifier = Modifier.height(5.dp))
-
-            Text(
-                text = "Choose the emulated graphics adapter.",
-                color = secondaryText,
-                fontSize = 14.sp
-            )
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            SectionCard(
-                title = "Display Adapter",
-                subtitle = when (displayAdapter) {
-                    "Bochs Display" -> "Modern software framebuffer. Worth testing for better desktop responsiveness."
-                    "VirtIO VGA" -> "Paravirtualized graphics. Guest driver support may be required."
-                    "Cirrus VGA" -> "Legacy graphics adapter for older operating systems."
-                    else -> "Best compatibility. Recommended as the safe default."
-                },
-                surfaceColor = surface
-            ) {
-                BoxSelector(
-                    value = displayAdapter,
-                    expanded = displayAdapterMenu,
-                    onClick = { displayAdapterMenu = true },
-                    surfaceColor = surfaceVariant,
-                    accent = red
-                )
-
-                DropdownMenu(
-                    expanded = displayAdapterMenu,
-                    onDismissRequest = { displayAdapterMenu = false }
-                ) {
-                    listOf(
-                        "Standard VGA",
-                        "Bochs Display",
-                        "VirtIO VGA",
-                        "Cirrus VGA"
-                    ).forEach { option ->
-                        DropdownMenuItem(
-                            text = { Text(option) },
-                            onClick = {
-                                displayAdapter = option
-                                displayAdapterMenu = false
-                            }
-                        )
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(22.dp))
-
-            Text(
-                text = "Network",
-                color = Color.White,
-                fontSize = 24.sp,
-                fontWeight = FontWeight.Bold
-            )
-
-            Spacer(modifier = Modifier.height(5.dp))
-
-            Text(
-                text = "Configure guest network access.",
-                color = secondaryText,
-                fontSize = 14.sp
-            )
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            SectionCard(
-                title = "Network",
-                subtitle = "Enable or disable the virtual network adapter.",
-                surfaceColor = surface
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = if (networkEnabled) "Enabled" else "Disabled",
-                            color = Color.White,
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Text(
-                            text = if (networkEnabled) {
-                                "Guest networking will be available."
-                            } else {
-                                "No virtual network adapter will be attached."
-                            },
-                            color = secondaryText,
-                            fontSize = 12.sp
-                        )
-                    }
-
-                    Switch(
-                        checked = networkEnabled,
-                        onCheckedChange = { networkEnabled = it }
-                    )
-                }
-            }
-
-            if (networkEnabled) {
-                Spacer(modifier = Modifier.height(14.dp))
-
-                SectionCard(
-                    title = "Network Adapter",
-                    subtitle = when (networkAdapter) {
-                        "Realtek RTL8139" -> "Legacy adapter for older operating systems."
-                        "AMD PCnet" -> "Classic AMD PCnet adapter for older Windows and legacy guests."
-                        else -> "Recommended for Windows 10 and modern guests."
-                    },
-                    surfaceColor = surface
-                ) {
-                    BoxSelector(
-                        value = networkAdapter,
-                        expanded = networkAdapterMenu,
-                        onClick = { networkAdapterMenu = true },
-                        surfaceColor = surfaceVariant,
-                        accent = red
-                    )
-
-                    DropdownMenu(
-                        expanded = networkAdapterMenu,
-                        onDismissRequest = { networkAdapterMenu = false }
-                    ) {
-                        listOf("Intel E1000", "Intel E1000E", "Realtek RTL8139", "AMD PCnet").forEach { option ->
-                            DropdownMenuItem(
-                                text = { Text(option) },
-                                onClick = {
-                                    networkAdapter = option
-                                    networkAdapterMenu = false
-                                }
-                            )
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(14.dp))
-
-                SectionCard(
-                    title = "Network Mode",
-                    subtitle = "User (NAT) shares the Android device's connection without root.",
-                    surfaceColor = surface
-                ) {
-                    BoxSelector(
-                        value = networkMode,
-                        expanded = networkModeMenu,
-                        onClick = { networkModeMenu = true },
-                        surfaceColor = surfaceVariant,
-                        accent = red
-                    )
-
-                    DropdownMenu(
-                        expanded = networkModeMenu,
-                        onDismissRequest = { networkModeMenu = false }
-                    ) {
-                        listOf("User (NAT)").forEach { option ->
-                            DropdownMenuItem(
-                                text = { Text(option) },
-                                onClick = {
-                                    networkMode = option
-                                    networkModeMenu = false
-                                }
-                            )
-                        }
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(24.dp))
-
-            Text(
-                text = "Audio",
-                color = Color.White,
-                fontSize = 24.sp,
-                fontWeight = FontWeight.Bold
-            )
-
-            Spacer(modifier = Modifier.height(5.dp))
-
-            Text(
-                text = "Choose the emulated sound card for this virtual machine.",
-                color = secondaryText,
-                fontSize = 14.sp
-            )
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            SectionCard(
-                title = "Sound Card",
-                subtitle = when (soundCard) {
-                    "AC97" -> "Legacy AC97 audio for older Windows and Linux guests."
-                    "Sound Blaster 16" -> "Classic ISA Sound Blaster 16 for legacy operating systems."
-                    else -> "Intel HD Audio using RedBox's existing SDL audio backend."
-                },
-                surfaceColor = surface
-            ) {
-                listOf("Intel HDA", "AC97", "Sound Blaster 16").forEach { option ->
-                    FilterChip(
-                        selected = soundCard == option,
-                        onClick = { soundCard = option },
-                        label = { Text(option) }
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                }
-            }
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            SectionCard(
-                title = "Audio Backend",
-                subtitle = if (audioBackend == "AAudio") {
-                    "Low-latency Android AAudio output. Requires Android 8.0 or newer."
-                } else {
-                    "Default SDL Android audio output. Recommended for maximum compatibility."
-                },
-                surfaceColor = surface
-            ) {
-                listOf("Default", "AAudio").forEach { option ->
-                    FilterChip(
-                        selected = audioBackend == option,
-                        onClick = { audioBackend = option },
-                        label = { Text(option) }
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                }
-            }
-
-            Spacer(modifier = Modifier.height(24.dp))
-
-            Text(
-                text = "Advanced",
-                color = Color.White,
-                fontSize = 24.sp,
-                fontWeight = FontWeight.Bold
-            )
-
-            Spacer(modifier = Modifier.height(5.dp))
-
-            Text(
-                text = "Optional settings for advanced QEMU users.",
-                color = secondaryText,
-                fontSize = 14.sp
-            )
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            SectionCard(
-                title = "BIOS / Guest Date",
-                subtitle = "Set the guest RTC date for Windows beta builds. Default uses QEMU's normal current date.",
-                surfaceColor = surface
-            ) {
-                listOf("Default", "2001-07-01", "2003-10-01", "2005-04-01").forEach { option ->
-                    FilterChip(
-                        selected = biosDate == option,
-                        onClick = { biosDate = option },
-                        label = {
-                            Text(
-                                when (option) {
-                                    "Default" -> "Default"
-                                    "2001-07-01" -> "2001 (Whistler era)"
-                                    "2003-10-01" -> "2003 (Longhorn era)"
-                                    else -> "2005 (Longhorn era)"
-                                }
-                            )
-                        }
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                }
-
-                OutlinedTextField(
-                    value = if (biosDate == "Default") "" else biosDate,
-                    onValueChange = { biosDate = it.trim().ifBlank { "Default" } },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Custom date") },
-                    placeholder = { Text("YYYY-MM-DD", color = secondaryText) },
-                    singleLine = true,
-                    textStyle = androidx.compose.ui.text.TextStyle(color = Color.White)
-                )
-
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = "Example: 2005-04-01. This changes the guest RTC date.",
-                    color = secondaryText,
-                    fontSize = 12.sp
-                )
-            }
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            SectionCard(
-                title = "QEMU Parameters",
-                subtitle = "Optional extra QEMU command-line parameters. Leave empty for normal RedBox settings.",
-                surfaceColor = surface
-            ) {
-                OutlinedTextField(
-                    value = qemuParams,
-                    onValueChange = { qemuParams = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    placeholder = {
-                        Text(
-                            text = "-rtc base=localtime",
-                            color = secondaryText
-                        )
-                    },
-                    minLines = 2,
-                    maxLines = 5,
-                    textStyle = androidx.compose.ui.text.TextStyle(
-                        color = Color.White
-                    )
-                )
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                Text(
-                    text = "Example: -rtc base=localtime. Invalid or conflicting parameters can stop a VM from starting.",
-                    color = secondaryText,
-                    fontSize = 12.sp
-                )
-            }
-
-            Spacer(modifier = Modifier.height(24.dp))
-
-            Button(
-                onClick = {
-                    val newVM = VMModel(
-                        name = vmName,
-                        architecture = architecture,
-                        ram = ram,
-                        cpuCores = cpuCores,
-                        diskImage = diskImage,
-                        diskImageName = diskImageName,
-                        isoImage = isoImage,
-                        isoImageName = isoImageName,
-                        driverIsoImage = driverIsoImage,
-                        driverIsoImageName = driverIsoImageName,
-                        sharedDiskImage = sharedDiskImage,
-                        sharedDiskImageName = sharedDiskImageName,
-                        sharedFolderEnabled = sharedFolderEnabled,
-                        sharedFolderLastFileName = sharedFolderLastFileName,
-                        performancePreset = performancePreset,
-                        cpuModel = cpuModel,
-                        cpuFlags = cpuFlags,
-                        tcgCache = tcgCache,
-                        multiThreadedTcg = multiThreadedTcg,
-                        machineType = machineType,
-                        diskInterface = diskInterface,
-                        displayAdapter = displayAdapter,
-                        networkEnabled = networkEnabled,
-                        networkAdapter = networkAdapter,
-                        networkMode = networkMode,
-                        qemuParams = qemuParams.trim(),
-                        biosDate = biosDate.trim().ifBlank { "Default" },
-                        soundCard = soundCard,
-                        audioBackend = audioBackend
-                    )
-                    onVMCreated(newVM)
-                },
-                enabled = vmName.isNotBlank(),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(56.dp),
-                shape = RoundedCornerShape(18.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = red,
-                    contentColor = Color.White,
-                    disabledContainerColor = Color(0xFF3A2024),
-                    disabledContentColor = Color(0xFF777177)
-                )
-            ) {
-                Text(
-                    text = "Create Virtual Machine",
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            Text(
-                text = "You can change VM settings later.",
+            Surface(
                 modifier = Modifier.fillMaxWidth(),
-                color = secondaryText,
-                fontSize = 12.sp
-            )
+                shape = RoundedCornerShape(18.dp),
+                color = Color(0xFF101218)
+            ) {
+                Row(
+                    modifier = Modifier.padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Surface(
+                        modifier = Modifier.size(42.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        color = red
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text(
+                                text = "${createStep + 1}",
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 18.sp
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.size(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = stepTitles[createStep],
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 20.sp
+                        )
+                        Text(
+                            text = when (createStep) {
+                                0 -> "Name the VM and choose its core hardware."
+                                1 -> "Attach the system disk, install media and shared storage."
+                                2 -> "Choose graphics, network and sound devices."
+                                else -> "Optional guest date and custom QEMU arguments."
+                            },
+                            color = secondaryText,
+                            fontSize = 12.sp
+                        )
+                    }
+                }
+            }
 
-            Spacer(modifier = Modifier.height(20.dp))
+            when (createStep) {
+                0 -> {
+                    SectionCard(
+                        title = "Virtual Machine",
+                        subtitle = "The essentials. Advanced CPU tuning stays one tap away.",
+                        surfaceColor = surface
+                    ) {
+                        OutlinedTextField(
+                            value = vmName,
+                            onValueChange = { vmName = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            textStyle = androidx.compose.ui.text.TextStyle(color = Color.White),
+                            placeholder = { Text("Example: Windows 10", color = Color(0xFF666B75)) },
+                            label = { Text("VM name") },
+                            singleLine = true,
+                            shape = RoundedCornerShape(14.dp)
+                        )
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Text("Architecture", color = secondaryText, fontSize = 11.sp)
+                        Spacer(modifier = Modifier.height(5.dp))
+                        BoxSelector(
+                            value = architecture,
+                            expanded = architectureMenu,
+                            onClick = { architectureMenu = true },
+                            surfaceColor = surfaceVariant,
+                            accent = red
+                        )
+                        DropdownMenu(
+                            expanded = architectureMenu,
+                            onDismissRequest = { architectureMenu = false }
+                        ) {
+                            listOf("x86_64", "x86", "ARM64", "ARM").forEach { option ->
+                                DropdownMenuItem(
+                                    text = { Text(option) },
+                                    onClick = {
+                                        architecture = option
+                                        architectureMenu = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showCpuOptions = true },
+                        shape = RoundedCornerShape(18.dp),
+                        colors = CardDefaults.cardColors(containerColor = surface)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("CPU", color = Color.White, fontWeight = FontWeight.Bold)
+                                Text(
+                                    "$cpuCores · $cpuModel · $performancePreset",
+                                    color = secondaryText,
+                                    fontSize = 12.sp
+                                )
+                            }
+                            Text("Edit", color = red, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showRamOptions = true },
+                        shape = RoundedCornerShape(18.dp),
+                        colors = CardDefaults.cardColors(containerColor = surface)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Memory", color = Color.White, fontWeight = FontWeight.Bold)
+                                Text(ram, color = secondaryText, fontSize = 12.sp)
+                            }
+                            Text("Edit", color = red, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showMachineOptions = true },
+                        shape = RoundedCornerShape(18.dp),
+                        colors = CardDefaults.cardColors(containerColor = surface)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Machine", color = Color.White, fontWeight = FontWeight.Bold)
+                                Text(
+                                    when (machineType) {
+                                        "q35" -> "Q35"
+                                        "isapc" -> "ISA PC (Legacy)"
+                                        else -> "PC (i440FX)"
+                                    },
+                                    color = secondaryText,
+                                    fontSize = 12.sp
+                                )
+                            }
+                            Text("Edit", color = red, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                }
+
+                1 -> {
+                    SectionCard(
+                        title = "Disk Interface",
+                        subtitle = when (diskInterface) {
+                            "IDE" -> "Legacy-compatible storage on PC (i440FX)."
+                            "VirtIO Block" -> "Fast paravirtualized storage; Windows requires a VirtIO driver."
+                            else -> "SATA-style AHCI storage for supported guests."
+                        },
+                        surfaceColor = surface
+                    ) {
+                        BoxSelector(
+                            value = diskInterface,
+                            expanded = diskInterfaceMenu,
+                            onClick = { diskInterfaceMenu = true },
+                            surfaceColor = surfaceVariant,
+                            accent = red
+                        )
+                        DropdownMenu(
+                            expanded = diskInterfaceMenu,
+                            onDismissRequest = { diskInterfaceMenu = false }
+                        ) {
+                            listOf("AHCI", "IDE", "VirtIO Block").forEach { option ->
+                                DropdownMenuItem(
+                                    text = { Text(option) },
+                                    onClick = {
+                                        diskInterface = option
+                                        if (diskInterface == "IDE") {
+                                            machineType = "pc"
+                                            performancePreset = "Custom"
+                                        }
+                                        diskInterfaceMenu = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+
+                    SectionCard(
+                        title = "Firmware",
+                        subtitle = "Choose the firmware used to start this virtual machine.",
+                        surfaceColor = surface
+                    ) {
+                        listOf("Legacy BIOS", "UEFI (EDK2)").forEach { option ->
+                            FilterChip(
+                                selected = firmwareMode == option,
+                                onClick = { firmwareMode = option },
+                                label = { Text(option) }
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                        }
+
+                        Text(
+                            text = if (firmwareMode == "UEFI (EDK2)")
+                                "Uses RedBox's bundled EDK2 x86_64 UEFI firmware. Choose this for UEFI-capable operating systems."
+                            else
+                                "Uses the existing SeaBIOS-compatible legacy firmware. Recommended for existing RedBox VMs.",
+                            color = secondaryText,
+                            fontSize = 12.sp
+                        )
+                    }
+
+                    SectionCard(
+                        title = "High Priority",
+                        subtitle = "Give the QEMU VM worker a higher Android scheduling priority.",
+                        surfaceColor = surface
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = if (highPriority) "Enabled" else "Disabled",
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    text = "May help RedBox stay responsive under load. Android can still limit CPU scheduling and background execution.",
+                                    color = secondaryText,
+                                    fontSize = 12.sp
+                                )
+                            }
+                            Switch(
+                                checked = highPriority,
+                                onCheckedChange = { highPriority = it }
+                            )
+                        }
+                    }
+
+                    SectionCard(
+                        title = "Boot Priority",
+                        subtitle = "Choose which bootable device RedBox tries first.",
+                        surfaceColor = surface
+                    ) {
+                        listOf("Hard Disk First", "CD/DVD ISO First").forEach { option ->
+                            FilterChip(
+                                selected = bootPriority == option,
+                                onClick = { bootPriority = option },
+                                label = { Text(option) }
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                        }
+
+                        Text(
+                            text = if (bootPriority == "CD/DVD ISO First")
+                                "Useful while installing an operating system from the Install ISO."
+                            else
+                                "Recommended after installation so the virtual hard disk boots first.",
+                            color = secondaryText,
+                            fontSize = 12.sp
+                        )
+                    }
+
+                    FileSection(
+                        title = "System Disk",
+                        description = "Existing disk image used by the guest.",
+                        fileName = diskImageName,
+                        selected = diskImage.isNotEmpty(),
+                        buttonText = if (diskImage.isEmpty()) "Select Disk" else "Change Disk",
+                        surfaceColor = surface,
+                        accent = red,
+                        onSelect = {
+                            diskPicker.launch(
+                                arrayOf("application/octet-stream", "application/x-qcow2", "*/*")
+                            )
+                        }
+                    )
+
+                    OutlinedButton(
+                        onClick = { showCreateDiskDialog = true },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("＋ Create Blank Disk")
+                    }
+
+                    FileSection(
+                        title = "Install ISO",
+                        description = "Optional boot or operating-system installation media.",
+                        fileName = isoImageName,
+                        selected = isoImage.isNotEmpty(),
+                        buttonText = if (isoImage.isEmpty()) "Select ISO" else "Change ISO",
+                        surfaceColor = surface,
+                        accent = red,
+                        onSelect = {
+                            isoPicker.launch(
+                                arrayOf("application/x-iso9660-image", "application/octet-stream", "*/*")
+                            )
+                        }
+                    )
+
+                    FileSection(
+                        title = "Driver ISO",
+                        description = "Optional second CD-ROM, useful for VirtIO drivers.",
+                        fileName = driverIsoImageName,
+                        selected = driverIsoImage.isNotEmpty(),
+                        buttonText = if (driverIsoImage.isEmpty()) "Select Driver ISO" else "Change Driver ISO",
+                        surfaceColor = surface,
+                        accent = red,
+                        onSelect = {
+                            driverIsoPicker.launch(
+                                arrayOf("application/x-iso9660-image", "application/octet-stream", "*/*")
+                            )
+                        }
+                    )
+
+                    FileSection(
+                        title = "Shared Hard Drive",
+                        description = "Optional second virtual disk for guest file transfer.",
+                        fileName = sharedDiskImageName,
+                        selected = sharedDiskImage.isNotEmpty(),
+                        buttonText = if (sharedDiskImage.isEmpty()) "Select Shared Drive" else "Change Shared Drive",
+                        surfaceColor = surface,
+                        accent = red,
+                        onSelect = {
+                            sharedDiskPicker.launch(
+                                arrayOf("application/octet-stream", "application/x-qcow2", "*/*")
+                            )
+                        }
+                    )
+
+                    SectionCard(
+                        title = "Shared Folder",
+                        subtitle = "Import Android files into a Windows-readable QEMU VVFAT drive.",
+                        surfaceColor = surface
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    if (sharedFolderEnabled) "Enabled" else "Disabled",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    if (sharedFolderLastFileName.isNotEmpty())
+                                        "Last added: $sharedFolderLastFileName"
+                                    else
+                                        "No imported file yet",
+                                    color = secondaryText,
+                                    fontSize = 12.sp
+                                )
+                            }
+                            Switch(
+                                checked = sharedFolderEnabled,
+                                onCheckedChange = {
+                                    sharedFolderEnabled = it
+                                    if (it) {
+                                        sharedDiskImage = ""
+                                        sharedDiskImageName = ""
+                                    }
+                                }
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        Button(
+                            onClick = { sharedFolderFilePicker.launch(arrayOf("*/*")) },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = red,
+                                contentColor = Color.White
+                            )
+                        ) {
+                            Text("Add File")
+                        }
+                    }
+                }
+
+                2 -> {
+                    SectionCard(
+                        title = "Display",
+                        subtitle = when (displayAdapter) {
+                            "Bochs Display" -> "Modern software framebuffer."
+                            "VirtIO VGA" -> "Paravirtualized graphics; guest support may be required."
+                            "Cirrus VGA" -> "Legacy adapter for older operating systems."
+                            else -> "Standard VGA for broad compatibility."
+                        },
+                        surfaceColor = surface
+                    ) {
+                        BoxSelector(
+                            value = displayAdapter,
+                            expanded = displayAdapterMenu,
+                            onClick = { displayAdapterMenu = true },
+                            surfaceColor = surfaceVariant,
+                            accent = red
+                        )
+                        DropdownMenu(
+                            expanded = displayAdapterMenu,
+                            onDismissRequest = { displayAdapterMenu = false }
+                        ) {
+                            listOf("Standard VGA", "Bochs Display", "VirtIO VGA", "Cirrus VGA").forEach { option ->
+                                DropdownMenuItem(
+                                    text = { Text(option) },
+                                    onClick = {
+                                        displayAdapter = option
+                                        displayAdapterMenu = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+
+                    SectionCard(
+                        title = "3D Acceleration",
+                        subtitle = if (displayAdapter == "VirtIO VGA") {
+                            if (threeDAcceleration)
+                                "Enabled · VirGL/OpenGL ES acceleration"
+                            else
+                                "Disabled · standard VirtIO VGA"
+                        } else {
+                            "Available only with VirtIO VGA."
+                        },
+                        surfaceColor = surface
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = if (threeDAcceleration && displayAdapter == "VirtIO VGA") "Enabled" else "Disabled",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    text = if (displayAdapter == "VirtIO VGA")
+                                        "Uses RedBox's existing VirtIO VirGL/GLES path. Guest driver support is still required."
+                                    else
+                                        "Select VirtIO VGA above to enable this option.",
+                                    color = Color.White.copy(alpha = 0.65f),
+                                    fontSize = 12.sp
+                                )
+                            }
+                            Switch(
+                                checked = threeDAcceleration && displayAdapter == "VirtIO VGA",
+                                onCheckedChange = { threeDAcceleration = it },
+                                enabled = displayAdapter == "VirtIO VGA"
+                            )
+                        }
+                    }
+
+                    SectionCard(
+                        title = "Network",
+                        subtitle = if (networkEnabled) "$networkAdapter · $networkMode" else "No virtual network adapter.",
+                        surfaceColor = surface
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                if (networkEnabled) "Enabled" else "Disabled",
+                                modifier = Modifier.weight(1f),
+                                color = Color.White,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Switch(
+                                checked = networkEnabled,
+                                onCheckedChange = { networkEnabled = it }
+                            )
+                        }
+
+                        if (networkEnabled) {
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text("Adapter", color = secondaryText, fontSize = 11.sp)
+                            Spacer(modifier = Modifier.height(5.dp))
+                            BoxSelector(
+                                value = networkAdapter,
+                                expanded = networkAdapterMenu,
+                                onClick = { networkAdapterMenu = true },
+                                surfaceColor = surfaceVariant,
+                                accent = red
+                            )
+                            DropdownMenu(
+                                expanded = networkAdapterMenu,
+                                onDismissRequest = { networkAdapterMenu = false }
+                            ) {
+                                listOf("Intel E1000", "Intel E1000E", "Realtek RTL8139", "AMD PCnet").forEach { option ->
+                                    DropdownMenuItem(
+                                        text = { Text(option) },
+                                        onClick = {
+                                            networkAdapter = option
+                                            networkAdapterMenu = false
+                                        }
+                                    )
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text("Mode", color = secondaryText, fontSize = 11.sp)
+                            Spacer(modifier = Modifier.height(5.dp))
+                            BoxSelector(
+                                value = networkMode,
+                                expanded = networkModeMenu,
+                                onClick = { networkModeMenu = true },
+                                surfaceColor = surfaceVariant,
+                                accent = red
+                            )
+                            DropdownMenu(
+                                expanded = networkModeMenu,
+                                onDismissRequest = { networkModeMenu = false }
+                            ) {
+                                listOf("User (NAT)").forEach { option ->
+                                    DropdownMenuItem(
+                                        text = { Text(option) },
+                                        onClick = {
+                                            networkMode = option
+                                            networkModeMenu = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    SectionCard(
+                        title = "Sound Card",
+                        subtitle = "Choose the emulated guest audio device.",
+                        surfaceColor = surface
+                    ) {
+                        listOf("Intel HDA", "AC97", "Sound Blaster 16").forEach { option ->
+                            FilterChip(
+                                selected = soundCard == option,
+                                onClick = { soundCard = option },
+                                label = { Text(option) }
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                        }
+                    }
+
+                    SectionCard(
+                        title = "Audio Backend",
+                        subtitle = if (audioBackend == "AAudio")
+                            "Experimental low-latency Android output."
+                        else
+                            "Default SDL Android audio output.",
+                        surfaceColor = surface
+                    ) {
+                        listOf("Default", "AAudio").forEach { option ->
+                            FilterChip(
+                                selected = audioBackend == option,
+                                onClick = { audioBackend = option },
+                                label = { Text(option) }
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                        }
+                    }
+                }
+
+                else -> {
+                    SectionCard(
+                        title = "BIOS / Guest Date",
+                        subtitle = "Optional RTC date for Windows beta builds.",
+                        surfaceColor = surface
+                    ) {
+                        listOf("Default", "2001-07-01", "2003-10-01", "2005-04-01").forEach { option ->
+                            FilterChip(
+                                selected = biosDate == option,
+                                onClick = { biosDate = option },
+                                label = {
+                                    Text(
+                                        when (option) {
+                                            "Default" -> "Default"
+                                            "2001-07-01" -> "2001 (Whistler)"
+                                            "2003-10-01" -> "2003 (Longhorn)"
+                                            else -> "2005 (Longhorn)"
+                                        }
+                                    )
+                                }
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                        }
+
+                        OutlinedTextField(
+                            value = if (biosDate == "Default") "" else biosDate,
+                            onValueChange = { biosDate = it.trim().ifBlank { "Default" } },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("Custom date") },
+                            placeholder = { Text("YYYY-MM-DD", color = secondaryText) },
+                            singleLine = true,
+                            textStyle = androidx.compose.ui.text.TextStyle(color = Color.White)
+                        )
+                    }
+
+                    SectionCard(
+                        title = "QEMU Parameters",
+                        subtitle = "Extra command-line arguments. Invalid or conflicting parameters can prevent startup.",
+                        surfaceColor = surface
+                    ) {
+                        OutlinedTextField(
+                            value = qemuParams,
+                            onValueChange = { qemuParams = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            placeholder = { Text("-rtc base=localtime", color = secondaryText) },
+                            minLines = 3,
+                            maxLines = 6,
+                            textStyle = androidx.compose.ui.text.TextStyle(color = Color.White)
+                        )
+                    }
+
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(18.dp),
+                        color = Color(0xFF101218)
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Text(
+                                "Ready to create",
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 16.sp
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                "${vmName.ifBlank { "Unnamed VM" }} · $architecture · $ram · $cpuCores",
+                                color = secondaryText,
+                                fontSize = 12.sp
+                            )
+                            Text(
+                                "${if (diskImageName.isBlank()) "No disk selected" else diskImageName} · $displayAdapter",
+                                color = secondaryText,
+                                fontSize = 12.sp
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                "You can change VM settings later.",
+                                color = secondaryText,
+                                fontSize = 11.sp
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
         }
     }
 }

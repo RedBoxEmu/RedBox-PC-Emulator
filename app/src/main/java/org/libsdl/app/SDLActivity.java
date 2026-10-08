@@ -783,6 +783,28 @@ public class SDLActivity
      * DummyEdit + SDLInputConnection already translate Android IME text/key
      * events into SDL native keyboard events used by QEMU's SDL display.
      */
+    /*
+     * REDBOX Keyboard IME bridge:
+     * MainActivity overrides these hooks. They let DummyEdit/SDLInputConnection
+     * forward software-keyboard text and editing keys through RedBox's existing
+     * UI-process -> Messenger -> :qemu keyboard path.
+     */
+    protected boolean onRedBoxImeText(String text) {
+        return false;
+    }
+
+    protected boolean onRedBoxImeKey(int keyCode, boolean down) {
+        return false;
+    }
+
+    public static boolean sendRedBoxImeText(String text) {
+        return mSingleton != null && mSingleton.onRedBoxImeText(text);
+    }
+
+    public static boolean sendRedBoxImeKey(int keyCode, boolean down) {
+        return mSingleton != null && mSingleton.onRedBoxImeKey(keyCode, down);
+    }
+
     public static void showRedBoxKeyboard() {
         final SDLActivity activity = mSingleton;
 
@@ -1234,6 +1256,18 @@ public class SDLActivity
      */
     public static void setRedBoxSurface(ExSDLSurface surface) {
         mSurface = surface;
+    }
+
+    /*
+     * REDBOX Mouse v4 - Stage 1:
+     * Return the already-registered ExSDLSurface so the Compose VM screen can
+     * enable/disable SDL touch ownership without adding another gesture layer.
+     */
+    public static ExSDLSurface getRedBoxSurfaceView() {
+        if (mSurface instanceof ExSDLSurface) {
+            return (ExSDLSurface) mSurface;
+        }
+        return null;
     }
 
     //LIMBO:
@@ -1733,18 +1767,20 @@ class SDLInputConnection extends BaseInputConnection {
 
     @Override
     public boolean sendKeyEvent(KeyEvent event) {
-        /*
-         * This used to handle the keycodes from soft keyboard (and IME-translated input from hardkeyboard)
-         * However, as of Ice Cream Sandwich and later, almost all soft keyboard doesn't generate key presses
-         * and so we need to generate them ourselves in commitText.  To avoid duplicates on the handful of keys
-         * that still do, we empty this out.
-         */
+        int action = event.getAction();
+
+        if (action == KeyEvent.ACTION_DOWN || action == KeyEvent.ACTION_UP) {
+            boolean down = action == KeyEvent.ACTION_DOWN;
+
+            if (SDLActivity.sendRedBoxImeKey(event.getKeyCode(), down)) {
+                return true;
+            }
+        }
 
         /*
-         * Return DOES still generate a key event, however.  So rather than using it as the 'click a button' key
-         * as we do with physical keyboards, let's just use it to hide the keyboard.
+         * Return DOES still generate a key event on some IMEs. Keep SDL's
+         * original hide-on-return behavior when RedBox is not handling it.
          */
-
         if (event.getKeyCode() == KeyEvent.KEYCODE_ENTER) {
             String imeHide = SDLActivity.nativeGetHint("SDL_RETURN_KEY_HIDES_IME");
             if ((imeHide != null) && imeHide.equals("1")) {
@@ -1757,19 +1793,23 @@ class SDLInputConnection extends BaseInputConnection {
             }
         }
 
-
         return super.sendKeyEvent(event);
     }
 
     @Override
     public boolean commitText(CharSequence text, int newCursorPosition) {
+        String committedText = text == null ? "" : text.toString();
 
-        for (int i = 0; i < text.length(); i++) {
-            char c = text.charAt(i);
+        if (SDLActivity.sendRedBoxImeText(committedText)) {
+            return true;
+        }
+
+        for (int i = 0; i < committedText.length(); i++) {
+            char c = committedText.charAt(i);
             nativeGenerateScancodeForUnichar(c);
         }
 
-        SDLInputConnection.nativeCommitText(text.toString(), newCursorPosition);
+        SDLInputConnection.nativeCommitText(committedText, newCursorPosition);
 
         return super.commitText(text, newCursorPosition);
     }
