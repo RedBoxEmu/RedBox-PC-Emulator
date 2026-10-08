@@ -1356,11 +1356,7 @@ Java_com_rimvydop_redboxpcemulator_MainActivity_nativeQemuStart(
         cpuModel = "Default";
     }
 
-    // RedBox v0.2.1: supported x86 machine types.
-    // Keep pc as the safe fallback for old/unknown saved values.
-    if (machineType != "pc" &&
-        machineType != "q35" &&
-        machineType != "isapc") {
+    if (machineType != "q35") {
         machineType = "pc";
     }
 
@@ -1378,6 +1374,38 @@ Java_com_rimvydop_redboxpcemulator_MainActivity_nativeQemuStart(
         safeTcgCacheMb != 256 &&
         safeTcgCacheMb != 512) {
         safeTcgCacheMb = 256;
+    }
+
+    /*
+     * v0.2.2 Android memory stability guard.
+     *
+     * The TCG translation buffer is native memory on top of the guest RAM,
+     * SDL/display buffers, QEMU block caches and Android process overhead.
+     * Large Windows guests can therefore push the isolated :qemu process
+     * into severe memory pressure during installation, where Windows Setup
+     * performs sustained decompression and disk writes.
+     *
+     * Keep small guests unchanged, but reduce oversized TCG caches for large
+     * guests. This preserves the user's selected guest RAM while removing a
+     * large, optional native-memory allocation.
+     */
+    const int requestedTcgCacheMb = safeTcgCacheMb;
+    const int safeGuestRamMb =
+            ramMb > 0 ? static_cast<int>(ramMb) : 512;
+
+    if (safeGuestRamMb >= 2048 && safeTcgCacheMb > 128) {
+        safeTcgCacheMb = 128;
+    } else if (safeGuestRamMb >= 1024 && safeTcgCacheMb > 256) {
+        safeTcgCacheMb = 256;
+    }
+
+    if (safeTcgCacheMb != requestedTcgCacheMb) {
+        LOGI(
+                "v0.2.2 memory guard: guest RAM=%d MB, TCG cache reduced %d -> %d MB",
+                safeGuestRamMb,
+                requestedTcgCacheMb,
+                safeTcgCacheMb
+        );
     }
 
     const bool useMultiThreadedTcg =
@@ -1450,12 +1478,10 @@ Java_com_rimvydop_redboxpcemulator_MainActivity_nativeQemuStart(
             networkMode.c_str()
     );
 
-    const bool hasMainDisk = !diskUri.empty();
-
-    if (hasMainDisk) {
-        LOGI("Main disk selected");
-    } else {
-        LOGI("No main disk selected; starting VM without a primary hard disk");
+    if (diskUri.empty()) {
+        return env->NewStringUTF(
+                "QEMU Disk Test Failed: no disk image selected"
+        );
     }
 
     /*
@@ -1661,57 +1687,82 @@ Java_com_rimvydop_redboxpcemulator_MainActivity_nativeQemuStart(
 
     LOGI("QEMU firmware is ready");
 
-    int diskFd = -1;
-    int qemuRwFd = -1;
-
-    if (hasMainDisk) {
-        diskFd =
-                openAndroidFd(
-                        env,
-                        thiz,
-                        diskUri
-                );
-
-        if (diskFd < 0) {
-            return env->NewStringUTF(
-                    "QEMU Disk Test Failed: could not open disk image"
+    int diskFd =
+            openAndroidFd(
+                    env,
+                    thiz,
+                    diskUri
             );
-        }
 
-        /*
-         * Android SAF gives RedBox a writable O_RDWR descriptor.
-         * Keep the Java-owned descriptor open until QEMU returns and give
-         * QEMU its own duplicate through fd-set 1.
-         */
-        qemuRwFd = dup(diskFd);
-
-        if (qemuRwFd < 0) {
-            closeAndroidFd(env, thiz, diskFd);
-            return env->NewStringUTF(
-                    "QEMU Disk Test Failed: could not duplicate Android fd"
-            );
-        }
-
-        int fdFlags = fcntl(qemuRwFd, F_GETFD);
-
-        if (fdFlags < 0 ||
-            fcntl(qemuRwFd, F_SETFD, fdFlags & ~FD_CLOEXEC) < 0) {
-            if (qemuRwFd >= 0) close(qemuRwFd);
-            if (diskFd >= 0) closeAndroidFd(env, thiz, diskFd);
-            return env->NewStringUTF(
-                    "QEMU Disk Test Failed: could not clear FD_CLOEXEC"
-            );
-        }
-
-        int rwStatusFlags = fcntl(qemuRwFd, F_GETFL);
-
-        LOGI(
-                "Android Java fd=%d, QEMU inherited fd=%d flags=0x%x, FD_CLOEXEC cleared",
-                diskFd,
-                qemuRwFd,
-                rwStatusFlags
+    if (diskFd < 0) {
+        return env->NewStringUTF(
+                "QEMU Disk Test Failed: could not open disk image"
         );
     }
+
+    /*
+     * Android SAF gives RedBox a writable O_RDWR descriptor.
+     *
+     * RedBox's Android-specific QEMU patch allows that O_RDWR descriptor
+     * to satisfy a block-layer O_RDONLY fd-set request as well. Therefore
+     * we only need one private descriptor for QEMU.
+     *
+     * Keep the Java-owned diskFd open until QEMU eventually returns.
+     */
+
+    int qemuRwFd =
+            dup(diskFd);
+
+    if (qemuRwFd < 0) {
+        closeAndroidFd(
+                env,
+                thiz,
+                diskFd
+        );
+
+        return env->NewStringUTF(
+                "QEMU Disk Test Failed: could not duplicate Android fd"
+        );
+    }
+
+    int fdFlags =
+            fcntl(
+                    qemuRwFd,
+                    F_GETFD
+            );
+
+    if (fdFlags < 0 ||
+        fcntl(
+                qemuRwFd,
+                F_SETFD,
+                fdFlags & ~FD_CLOEXEC
+        ) < 0) {
+
+        close(qemuRwFd);
+
+        closeAndroidFd(
+                env,
+                thiz,
+                diskFd
+        );
+
+        return env->NewStringUTF(
+                "QEMU Disk Test Failed: could not clear FD_CLOEXEC"
+        );
+    }
+
+    int rwStatusFlags =
+            fcntl(
+                    qemuRwFd,
+                    F_GETFL
+            );
+
+    LOGI(
+            "Android Java fd=%d, QEMU inherited fd=%d flags=0x%x, FD_CLOEXEC cleared",
+            diskFd,
+            qemuRwFd,
+            rwStatusFlags
+    );
 
     /*
      * Optional CD-ROM / ISO.
@@ -1731,8 +1782,13 @@ Java_com_rimvydop_redboxpcemulator_MainActivity_nativeQemuStart(
                 );
 
         if (isoFd < 0) {
-            if (qemuRwFd >= 0) close(qemuRwFd);
-            if (diskFd >= 0) closeAndroidFd(env, thiz, diskFd);
+            close(qemuRwFd);
+
+            closeAndroidFd(
+                    env,
+                    thiz,
+                    diskFd
+            );
 
             return env->NewStringUTF(
                     "QEMU ISO Test Failed: could not open ISO image"
@@ -1748,8 +1804,13 @@ Java_com_rimvydop_redboxpcemulator_MainActivity_nativeQemuStart(
                     isoFd
             );
 
-            if (qemuRwFd >= 0) close(qemuRwFd);
-            if (diskFd >= 0) closeAndroidFd(env, thiz, diskFd);
+            close(qemuRwFd);
+
+            closeAndroidFd(
+                    env,
+                    thiz,
+                    diskFd
+            );
 
             return env->NewStringUTF(
                     "QEMU ISO Test Failed: could not duplicate ISO fd"
@@ -1777,8 +1838,13 @@ Java_com_rimvydop_redboxpcemulator_MainActivity_nativeQemuStart(
                     isoFd
             );
 
-            if (qemuRwFd >= 0) close(qemuRwFd);
-            if (diskFd >= 0) closeAndroidFd(env, thiz, diskFd);
+            close(qemuRwFd);
+
+            closeAndroidFd(
+                    env,
+                    thiz,
+                    diskFd
+            );
 
             return env->NewStringUTF(
                     "QEMU ISO Test Failed: could not clear ISO FD_CLOEXEC"
@@ -1815,8 +1881,8 @@ Java_com_rimvydop_redboxpcemulator_MainActivity_nativeQemuStart(
             if (isoFd >= 0) {
                 closeAndroidFd(env, thiz, isoFd);
             }
-            if (qemuRwFd >= 0) close(qemuRwFd);
-            if (diskFd >= 0) closeAndroidFd(env, thiz, diskFd);
+            close(qemuRwFd);
+            closeAndroidFd(env, thiz, diskFd);
             return env->NewStringUTF(
                     "QEMU Shared Drive Failed: could not open shared disk image"
             );
@@ -1832,8 +1898,8 @@ Java_com_rimvydop_redboxpcemulator_MainActivity_nativeQemuStart(
             if (isoFd >= 0) {
                 closeAndroidFd(env, thiz, isoFd);
             }
-            if (qemuRwFd >= 0) close(qemuRwFd);
-            if (diskFd >= 0) closeAndroidFd(env, thiz, diskFd);
+            close(qemuRwFd);
+            closeAndroidFd(env, thiz, diskFd);
             return env->NewStringUTF(
                     "QEMU Shared Drive Failed: could not duplicate shared disk fd"
             );
@@ -1850,8 +1916,8 @@ Java_com_rimvydop_redboxpcemulator_MainActivity_nativeQemuStart(
             if (isoFd >= 0) {
                 closeAndroidFd(env, thiz, isoFd);
             }
-            if (qemuRwFd >= 0) close(qemuRwFd);
-            if (diskFd >= 0) closeAndroidFd(env, thiz, diskFd);
+            close(qemuRwFd);
+            closeAndroidFd(env, thiz, diskFd);
             return env->NewStringUTF(
                     "QEMU Shared Drive Failed: could not clear shared disk FD_CLOEXEC"
             );
@@ -1881,8 +1947,8 @@ Java_com_rimvydop_redboxpcemulator_MainActivity_nativeQemuStart(
             if (sharedDiskFd >= 0) closeAndroidFd(env, thiz, sharedDiskFd);
             if (qemuIsoFd >= 0) close(qemuIsoFd);
             if (isoFd >= 0) closeAndroidFd(env, thiz, isoFd);
-            if (qemuRwFd >= 0) close(qemuRwFd);
-            if (diskFd >= 0) closeAndroidFd(env, thiz, diskFd);
+            close(qemuRwFd);
+            closeAndroidFd(env, thiz, diskFd);
             return env->NewStringUTF(
                     "QEMU Driver ISO Failed: could not open CD-ROM 2 image"
             );
@@ -1896,8 +1962,8 @@ Java_com_rimvydop_redboxpcemulator_MainActivity_nativeQemuStart(
             if (sharedDiskFd >= 0) closeAndroidFd(env, thiz, sharedDiskFd);
             if (qemuIsoFd >= 0) close(qemuIsoFd);
             if (isoFd >= 0) closeAndroidFd(env, thiz, isoFd);
-            if (qemuRwFd >= 0) close(qemuRwFd);
-            if (diskFd >= 0) closeAndroidFd(env, thiz, diskFd);
+            close(qemuRwFd);
+            closeAndroidFd(env, thiz, diskFd);
             return env->NewStringUTF(
                     "QEMU Driver ISO Failed: could not duplicate CD-ROM 2 fd"
             );
@@ -1913,8 +1979,8 @@ Java_com_rimvydop_redboxpcemulator_MainActivity_nativeQemuStart(
             if (sharedDiskFd >= 0) closeAndroidFd(env, thiz, sharedDiskFd);
             if (qemuIsoFd >= 0) close(qemuIsoFd);
             if (isoFd >= 0) closeAndroidFd(env, thiz, isoFd);
-            if (qemuRwFd >= 0) close(qemuRwFd);
-            if (diskFd >= 0) closeAndroidFd(env, thiz, diskFd);
+            close(qemuRwFd);
+            closeAndroidFd(env, thiz, diskFd);
             return env->NewStringUTF(
                     "QEMU Driver ISO Failed: could not clear CD-ROM 2 FD_CLOEXEC"
             );
@@ -2110,15 +2176,13 @@ Java_com_rimvydop_redboxpcemulator_MainActivity_nativeQemuStart(
      * The RedBox Android QEMU patch permits this descriptor to satisfy
      * an O_RDONLY request while preserving normal matching elsewhere.
      */
-    if (qemuRwFd >= 0) {
-        std::string addFdArgument =
-                "fd=" +
-                std::to_string(qemuRwFd) +
-                ",set=1,opaque=redboxdisk";
+    std::string addFdArgument =
+            "fd=" +
+            std::to_string(qemuRwFd) +
+            ",set=1,opaque=redboxdisk";
 
-        arguments.emplace_back("-add-fd");
-        arguments.emplace_back(addFdArgument);
-    }
+    arguments.emplace_back("-add-fd");
+    arguments.emplace_back(addFdArgument);
 
     if (qemuIsoFd >= 0) {
         std::string addIsoFdArgument =
@@ -2163,12 +2227,9 @@ Java_com_rimvydop_redboxpcemulator_MainActivity_nativeQemuStart(
     // while VirtIO Block is selected, keep a small AHCI controller only for the
     // virtual CD-ROM so Windows installers/driver ISOs continue to work.
     const bool needsAhciController =
-            (diskInterface == "AHCI" &&
-             (hasMainDisk || qemuIsoFd >= 0 || qemuDriverIsoFd >= 0 ||
-              qemuSharedDiskFd >= 0 || sharedFolderEnabled)) ||
+            diskInterface == "AHCI" ||
             (diskInterface == "VirtIO Block" &&
-             (qemuIsoFd >= 0 || qemuDriverIsoFd >= 0 ||
-              qemuSharedDiskFd >= 0 || sharedFolderEnabled));
+             (qemuIsoFd >= 0 || qemuDriverIsoFd >= 0 || qemuSharedDiskFd >= 0 || sharedFolderEnabled));
 
     if (needsAhciController) {
         arguments.emplace_back("-device");
@@ -2176,44 +2237,56 @@ Java_com_rimvydop_redboxpcemulator_MainActivity_nativeQemuStart(
     }
 
     const bool bootIsoFirst =
-            qemuIsoFd >= 0 &&
-            (!hasMainDisk || bootPriority == "CD/DVD ISO First");
+            bootPriority == "CD/DVD ISO First" && qemuIsoFd >= 0;
     const int diskBootIndex = bootIsoFirst ? 2 : 1;
     const int isoBootIndex = bootIsoFirst ? 1 : 2;
 
     LOGI(
-            "Boot priority: %s (main disk=%s, disk bootindex=%d, install ISO bootindex=%d)",
+            "Boot priority: %s (disk bootindex=%d, install ISO bootindex=%d)",
             bootPriority.c_str(),
-            hasMainDisk ? "present" : "none",
             diskBootIndex,
             isoBootIndex
     );
 
-    if (hasMainDisk && qemuRwFd >= 0) {
+    /*
+     * v0.2.2 storage compatibility:
+     *
+     * For legacy IDE, let QEMU connect the backend through the machine's
+     * native IDE interface instead of manually creating an ide-hd frontend.
+     * This matches QEMU's documented PC IDE path and is friendlier to SeaBIOS
+     * and Windows installation media.
+     *
+     * VirtIO and AHCI keep explicit frontends because they use dedicated
+     * controllers. AHCI explicitly selects SATA port 0 / unit 0.
+     */
+    if (diskInterface == "IDE") {
+        std::string ideDiskDriveArgument =
+                "file=/dev/fdset/1,if=ide,index=0,media=disk,format=" +
+                diskFormat + ",cache=writeback,aio=threads";
+
+        arguments.emplace_back("-drive");
+        arguments.emplace_back(ideDiskDriveArgument);
+
+        LOGI("v0.2.2 IDE compatibility path: native machine IDE index 0");
+    } else {
         std::string diskDriveArgument =
                 "file=/dev/fdset/1,if=none,id=redboxdisk,format=" +
                 diskFormat;
 
         arguments.emplace_back("-drive");
         arguments.emplace_back(diskDriveArgument);
-
         arguments.emplace_back("-device");
 
-        if (diskInterface == "IDE") {
-            arguments.emplace_back(
-                    "ide-hd,drive=redboxdisk,bus=ide.0,bootindex=" + std::to_string(diskBootIndex)
-            );
-        } else if (diskInterface == "VirtIO Block") {
+        if (diskInterface == "VirtIO Block") {
             arguments.emplace_back(
                     "virtio-blk-pci,drive=redboxdisk,bootindex=" + std::to_string(diskBootIndex)
             );
         } else {
             arguments.emplace_back(
-                    "ide-hd,drive=redboxdisk,bus=ahci.0,bootindex=" + std::to_string(diskBootIndex)
+                    "ide-hd,drive=redboxdisk,bus=ahci.0,unit=0,bootindex=" + std::to_string(diskBootIndex)
             );
+            LOGI("v0.2.2 AHCI compatibility path: SATA port 0 / unit 0");
         }
-    } else {
-        LOGI("Primary hard disk device omitted");
     }
 
     /*
@@ -2283,21 +2356,35 @@ Java_com_rimvydop_redboxpcemulator_MainActivity_nativeQemuStart(
      * VirtIO driver ISO cannot accidentally replace the normal boot disk.
      */
     if (qemuIsoFd >= 0) {
-        arguments.emplace_back("-drive");
-        arguments.emplace_back(
-                "file=/dev/fdset/2,if=none,id=redboxiso,media=cdrom,format=raw,readonly=on"
-        );
-
-        arguments.emplace_back("-device");
-
         if (diskInterface == "IDE") {
+            /*
+             * v0.2.2 IDE installer compatibility:
+             * Keep the installer ISO as an explicit backend/frontend pair so
+             * SeaBIOS receives a real bootindex for the ATAPI device.  The
+             * previous if=ide,index=2 shortcut did not carry bootindex and
+             * could spend a very long time probing/booting Windows media.
+             */
+            arguments.emplace_back("-drive");
             arguments.emplace_back(
-                    "ide-cd,drive=redboxiso,bus=ide.1,bootindex=" + std::to_string(isoBootIndex)
+                    "file=/dev/fdset/2,if=none,id=redboxiso,media=cdrom,format=raw,readonly=on"
+            );
+            arguments.emplace_back("-device");
+            arguments.emplace_back(
+                    "ide-cd,drive=redboxiso,bus=ide.1,unit=0,bootindex=" + std::to_string(isoBootIndex)
+            );
+            LOGI(
+                    "v0.2.2 IDE installer CD path: secondary IDE master, bootindex=%d",
+                    isoBootIndex
             );
         } else {
+            arguments.emplace_back("-drive");
+            arguments.emplace_back(
+                    "file=/dev/fdset/2,if=none,id=redboxiso,media=cdrom,format=raw,readonly=on"
+            );
+            arguments.emplace_back("-device");
             // AHCI is also used for optical media when the main disk is VirtIO.
             arguments.emplace_back(
-                    "ide-cd,drive=redboxiso,bus=ahci.1,bootindex=" + std::to_string(isoBootIndex)
+                    "ide-cd,drive=redboxiso,bus=ahci.1,unit=0,bootindex=" + std::to_string(isoBootIndex)
             );
         }
     }
@@ -2443,13 +2530,13 @@ Java_com_rimvydop_redboxpcemulator_MainActivity_nativeQemuStart(
             );
         }
 
-        if (qemuRwFd >= 0) {
-            close(qemuRwFd);
-        }
+        close(qemuRwFd);
 
-        if (diskFd >= 0) {
-            closeAndroidFd(env, thiz, diskFd);
-        }
+        closeAndroidFd(
+                env,
+                thiz,
+                diskFd
+        );
 
         return env->NewStringUTF(
                 "QEMU ADD-FD Test Failed: could not capture QEMU stderr"
@@ -2503,9 +2590,11 @@ Java_com_rimvydop_redboxpcemulator_MainActivity_nativeQemuStart(
         );
     }
 
-    if (diskFd >= 0) {
-        closeAndroidFd(env, thiz, diskFd);
-    }
+    closeAndroidFd(
+            env,
+            thiz,
+            diskFd
+    );
 
     std::string result =
             "QEMU 11.1.1 Windows + Shared Storage Test Finished (status " +

@@ -1,6 +1,8 @@
 package com.rimvydop.redboxpcemulator
 
 import android.view.KeyEvent
+import java.net.HttpURLConnection
+import java.net.URL
 
 import android.net.Uri
 import android.content.Intent
@@ -157,7 +159,7 @@ private object RedBoxSupportLog {
 
         return buildString {
             appendLine("RedBox PC Emulator Support Log")
-            appendLine("App version: 0.2.1")
+            appendLine("App version: 0.2.2")
             appendLine("Android: ${android.os.Build.VERSION.RELEASE} (API ${android.os.Build.VERSION.SDK_INT})")
             appendLine("Device: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
             appendLine("ABI: ${android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown"}")
@@ -1561,7 +1563,7 @@ class MainActivity : SDLActivity() {
 
         val qemuStatus = nativeQemuStatus()
         Log.d("RedBoxQEMU", qemuStatus)
-        RedBoxSupportLog.add("RedBox 0.2.1 started; native QEMU status: $qemuStatus")
+        RedBoxSupportLog.add("RedBox 0.2.2 started; native QEMU status: $qemuStatus")
 
         // Stage 5B: load/migrate first, then expose the complete VM library.
         loadSavedVM()
@@ -2564,28 +2566,28 @@ private fun RedBoxBottomBar(
                 ) {
                     RedBoxNavigationItem(
                         selected = selectedTab == 0,
-                        icon = "⌂",
+                        icon = "🏠",
                         label = "Home",
                         onClick = { onSelected(0) }
                     )
 
                     RedBoxNavigationItem(
                         selected = selectedTab == 1,
-                        icon = "▣",
+                        icon = "🖥️",
                         label = "VMs",
                         onClick = { onSelected(1) }
                     )
 
                     RedBoxNavigationItem(
                         selected = selectedTab == 2,
-                        icon = "□",
+                        icon = "📁",
                         label = "Files",
                         onClick = { onSelected(2) }
                     )
 
                     RedBoxNavigationItem(
                         selected = selectedTab == 3,
-                        icon = "⚙",
+                        icon = "⚙️",
                         label = "Settings",
                         onClick = { onSelected(3) }
                     )
@@ -2693,7 +2695,7 @@ private fun RedBoxHomeMaterial(
                 color = MaterialTheme.colorScheme.surfaceVariant
             ) {
                 Text(
-                    text = "v0.2.1",
+                    text = "v0.2.2",
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 11.sp,
@@ -2746,7 +2748,7 @@ private fun RedBoxHomeMaterial(
         ) {
             QuickAccessCard(
                 modifier = Modifier.weight(1f),
-                icon = "▣",
+                icon = "🪟",
                 title = "Windows",
                 subtitle = "PC images",
                 onClick = { onQuickAccess("Windows") }
@@ -2754,7 +2756,7 @@ private fun RedBoxHomeMaterial(
 
             QuickAccessCard(
                 modifier = Modifier.weight(1f),
-                icon = "●",
+                icon = "🤖",
                 title = "Android",
                 subtitle = "x86 images",
                 onClick = { onQuickAccess("Android") }
@@ -2762,7 +2764,7 @@ private fun RedBoxHomeMaterial(
 
             QuickAccessCard(
                 modifier = Modifier.weight(1f),
-                icon = "◈",
+                icon = "🐧",
                 title = "Linux",
                 subtitle = "Distributions",
                 onClick = { onQuickAccess("Linux") }
@@ -3707,6 +3709,67 @@ private fun RedBoxSettingsMaterial(
     var showAboutDialog by remember { mutableStateOf(false) }
     var showWhatsNewDialog by remember { mutableStateOf(false) }
     var showUpdateDialog by remember { mutableStateOf(false) }
+    var updateChecking by remember { mutableStateOf(false) }
+    var updateMessage by remember { mutableStateOf("Tap Check Now to look for GitHub releases.") }
+    val githubReleasesUrl = "https://github.com/RedBoxEmu/RedBox-PC-Emulator/releases"
+    val playStoreUrl = "https://play.google.com/store/apps/details?id=${context.packageName}"
+    fun openUpdateLink(url: String) {
+        try {
+            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+        } catch (error: Exception) {
+            Toast.makeText(context, "Unable to open link", Toast.LENGTH_SHORT).show()
+        }
+    }
+    fun checkGitHubRelease() {
+        if (updateChecking) return
+        updateChecking = true
+        updateMessage = "Checking GitHub Releases…"
+        Thread {
+            val message = try {
+                val connection = URL("https://api.github.com/repos/RedBoxEmu/RedBox-PC-Emulator/releases/latest")
+                    .openConnection() as HttpURLConnection
+                try {
+                    connection.connectTimeout = 10000
+                    connection.readTimeout = 10000
+                    connection.setRequestProperty("Accept", "application/vnd.github+json")
+                    connection.setRequestProperty("User-Agent", "RedBox-Android-Update-Checker")
+                    val status = connection.responseCode
+                    if (status == 200) {
+                        val json = JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
+                        val tag = json.optString("tag_name").trim()
+                        val installed = context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "unknown"
+                        val latest = tag.removePrefix("v").removePrefix("V")
+                        val installedParts = installed.split('.').mapNotNull { it.toIntOrNull() }
+                        val latestParts = latest.split('.').mapNotNull { it.toIntOrNull() }
+                        val newer = if (installedParts.isNotEmpty() && latestParts.isNotEmpty() && installedParts.size == installed.split('.').size && latestParts.size == latest.split('.').size) {
+                            (0 until maxOf(installedParts.size, latestParts.size)).firstNotNullOfOrNull { index ->
+                                val difference = latestParts.getOrElse(index) { 0 }.compareTo(installedParts.getOrElse(index) { 0 })
+                                if (difference == 0) null else difference
+                            }?.let { it > 0 }
+                        } else null
+                        "Installed: $installed\nLatest GitHub release: $tag\n\n" + when (newer) {
+                            true -> "A newer release is available on GitHub."
+                            false -> "You are up to date with the latest GitHub release."
+                            null -> "Could not compare version numbers. Review the release page."
+                        }
+                    } else if (status == 404) {
+                        "No published GitHub release was found yet. You can still check the repository or Google Play."
+                    } else {
+                        "GitHub update check failed (HTTP $status). Please try again later."
+                    }
+                } finally {
+                    connection.disconnect()
+                }
+            } catch (error: Exception) {
+                "Could not check GitHub. Check your internet connection and try again."
+            }
+            Handler(Looper.getMainLooper()).post {
+                updateMessage = message
+                updateChecking = false
+            }
+        }.start()
+    }
+
     var showStorageDialog by remember { mutableStateOf(false) }
     var showClearCacheDialog by remember { mutableStateOf(false) }
     var showSupportLogDialog by remember { mutableStateOf(false) }
@@ -3830,7 +3893,7 @@ private fun RedBoxSettingsMaterial(
             title = { Text("About RedBox") },
             text = {
                 Text(
-                    "RedBox PC Emulator\nVersion 0.2.1\n\n" +
+                    "RedBox PC Emulator\nVersion 0.2.2\n\n" +
                             "A QEMU-based PC emulator for Android.\n\n" +
                             "Run. Explore. Create."
                 )
@@ -3846,70 +3909,30 @@ private fun RedBoxSettingsMaterial(
     if (showWhatsNewDialog) {
         AlertDialog(
             onDismissRequest = { showWhatsNewDialog = false },
-            title = { Text("What's New in v0.2.1") },
+            title = { Text("What's New in v0.2.2") },
             text = {
                 Column(
                     modifier = Modifier
                         .height(420.dp)
                         .verticalScroll(rememberScrollState())
                 ) {
-                    Text("Profile avatar", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                    Text("Check for Updates", fontWeight = FontWeight.Bold, fontSize = 15.sp)
                     Text(
-                        "Choose your own profile picture for the RedBox welcome screen, change it later, or remove it at any time.",
+                        "Check the latest RedBox release on GitHub, and open GitHub Releases or Google Play from Settings.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 13.sp
                     )
-
                     Spacer(modifier = Modifier.height(14.dp))
-
-                    Text("ISA PC (Legacy)", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                    Text("My Socials", fontWeight = FontWeight.Bold, fontSize = 15.sp)
                     Text(
-                        "A new legacy ISA PC machine type is available alongside PC (i440FX) and Q35 for older guest operating systems.",
+                        "Find the developer's social links directly in RedBox Settings.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 13.sp
                     )
-
                     Spacer(modifier = Modifier.height(14.dp))
-
-                    Text("Redesigned Edit VM", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                    Text("Refreshed UI icons", fontWeight = FontWeight.Bold, fontSize = 15.sp)
                     Text(
-                        "Edit VM has been reorganized into a cleaner configuration screen while keeping the existing CPU, memory, machine, display, storage, network, audio, boot, firmware, and advanced options.",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 13.sp
-                    )
-
-                    Spacer(modifier = Modifier.height(14.dp))
-
-                    Text("Mouse sensitivity", fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                    Text(
-                        "Change VM mouse sensitivity between Low, Normal, and High from the runtime settings.",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 13.sp
-                    )
-
-                    Spacer(modifier = Modifier.height(14.dp))
-
-                    Text("Display Refresh", fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                    Text(
-                        "A Refresh control is available in the VM fullscreen toolbar to refresh the active RedBox display surface without restarting the VM.",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 13.sp
-                    )
-
-                    Spacer(modifier = Modifier.height(14.dp))
-
-                    Text("Start without disk or ISO", fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                    Text(
-                        "RedBox can now start a VM even when no main disk image or installation ISO is attached.",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 13.sp
-                    )
-
-                    Spacer(modifier = Modifier.height(14.dp))
-
-                    Text("Donate Me", fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                    Text(
-                        "A one-time Donate Me option has been added through Google Play Billing to support RedBox development.",
+                        "Updated internal interface icons while keeping the original RedBox app logo.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 13.sp
                     )
@@ -3928,15 +3951,24 @@ private fun RedBoxSettingsMaterial(
             onDismissRequest = { showUpdateDialog = false },
             title = { Text("Check for Update") },
             text = {
-                Text(
-                    "Installed version: 0.2.1\n\n" +
-                            "The update button is working. An online update source can be connected later when RedBox has a release page or update server."
-                )
+                Column {
+                    Text(updateMessage)
+                    Spacer(modifier = Modifier.height(12.dp))
+                    if (updateChecking) CircularProgressIndicator()
+                    TextButton(onClick = { checkGitHubRelease() }, enabled = !updateChecking) {
+                        Text("Check Now")
+                    }
+                    TextButton(onClick = { openUpdateLink(githubReleasesUrl) }) {
+                        Text("Open GitHub Releases")
+                    }
+                    TextButton(onClick = { openUpdateLink(playStoreUrl) }) {
+                        Text("Open Google Play")
+                    }
+                    Text("Google Play opens your app listing so users can check for updates there. Availability depends on publication in the Play Store.", fontSize = 12.sp)
+                }
             },
             confirmButton = {
-                TextButton(onClick = { showUpdateDialog = false }) {
-                    Text("OK")
-                }
+                TextButton(onClick = { showUpdateDialog = false }) { Text("Close") }
             }
         )
     }
@@ -3985,7 +4017,7 @@ private fun RedBoxSettingsMaterial(
                     onClick = {
                         val shareIntent = Intent(Intent.ACTION_SEND).apply {
                             type = "text/plain"
-                            putExtra(Intent.EXTRA_SUBJECT, "RedBox 0.2.1 Support Log")
+                            putExtra(Intent.EXTRA_SUBJECT, "RedBox 0.2.2 Support Log")
                             putExtra(Intent.EXTRA_TEXT, report)
                         }
                         context.startActivity(
@@ -4091,7 +4123,7 @@ private fun RedBoxSettingsMaterial(
 
         SettingsCard {
             SettingsRow(
-                icon = "☺",
+                icon = "👤",
                 title = "Profile",
                 subtitle = "$profileName • Name & avatar",
                 onClick = {
@@ -4103,7 +4135,7 @@ private fun RedBoxSettingsMaterial(
             SettingsDivider()
 
             SettingsRow(
-                icon = "♥",
+                icon = "❤️",
                 title = "Donate Me — €4.99",
                 subtitle = "Support RedBox development with a one-time donation",
                 onClick = onDonate
@@ -4112,7 +4144,7 @@ private fun RedBoxSettingsMaterial(
             SettingsDivider()
 
             SettingsRow(
-                icon = "☼",
+                icon = "🌙",
                 title = "Dark Theme",
                 subtitle =
                     if (darkTheme) {
@@ -4132,34 +4164,34 @@ private fun RedBoxSettingsMaterial(
             SettingsDivider()
 
             SettingsRow(
-                icon = "ⓘ",
+                icon = "ℹ️",
                 title = "About RedBox",
-                subtitle = "RedBox PC Emulator • Version 0.2.1",
+                subtitle = "RedBox PC Emulator • Version 0.2.2",
                 onClick = { showAboutDialog = true }
             )
 
             SettingsDivider()
 
             SettingsRow(
-                icon = "★",
+                icon = "✨",
                 title = "What's New",
-                subtitle = "See what's new in version 0.2.1",
+                subtitle = "See what's new in version 0.2.2",
                 onClick = { showWhatsNewDialog = true }
             )
 
             SettingsDivider()
 
             SettingsRow(
-                icon = "↻",
+                icon = "🔄",
                 title = "Check for Update",
-                subtitle = "Version 0.2.1",
+                subtitle = "Version 0.2.2",
                 onClick = { showUpdateDialog = true }
             )
 
             SettingsDivider()
 
             SettingsRow(
-                icon = "□",
+                icon = "💾",
                 title = "Storage Location",
                 subtitle = "Internal Storage",
                 onClick = { showStorageDialog = true }
@@ -4168,7 +4200,7 @@ private fun RedBoxSettingsMaterial(
             SettingsDivider()
 
             SettingsRow(
-                icon = "≡",
+                icon = "📋",
                 title = "Support Diagnostic Log",
                 subtitle = "Copy or share recent RedBox events",
                 onClick = { showSupportLogDialog = true }
@@ -4177,10 +4209,53 @@ private fun RedBoxSettingsMaterial(
             SettingsDivider()
 
             SettingsRow(
-                icon = "⌫",
+                icon = "🧹",
                 title = "Clear Cache",
                 subtitle = "Manage temporary files",
                 onClick = { showClearCacheDialog = true }
+            )
+        }
+
+        Spacer(modifier = Modifier.height(22.dp))
+
+        Text(
+            text = "My Socials",
+            fontSize = 20.sp,
+            fontWeight = FontWeight.Bold
+        )
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        SettingsCard {
+            SettingsRow(
+                icon = "▶️",
+                title = "RimvydopPlus — YouTube",
+                subtitle = "@rimvydoplus",
+                onClick = {
+                    openUpdateLink("https://www.youtube.com/@rimvydoplus")
+                }
+            )
+
+            SettingsDivider()
+
+            SettingsRow(
+                icon = "▶️",
+                title = "RedBox — YouTube",
+                subtitle = "@RedBox-pc",
+                onClick = {
+                    openUpdateLink("https://www.youtube.com/@RedBox-pc")
+                }
+            )
+
+            SettingsDivider()
+
+            SettingsRow(
+                icon = "💬",
+                title = "RedBox Discord Server",
+                subtitle = "Join our Discord community",
+                onClick = {
+                    openUpdateLink("https://discord.com/invite/aDcg5mqFc5")
+                }
             )
         }
 
@@ -4212,7 +4287,7 @@ private fun RedBoxSettingsMaterial(
                     )
 
                     Text(
-                        text = "Version 0.2.1",
+                        text = "Version 0.2.2",
                         color =
                             MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 12.sp

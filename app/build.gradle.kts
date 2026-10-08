@@ -13,8 +13,8 @@ android {
         applicationId = "com.rimvydop.redboxpcemulator"
         minSdk = 26
         targetSdk = 37
-        versionCode = 8
-        versionName = "0.2.1"
+        versionCode = 9
+        versionName = "0.2.2"
 
         ndk {
             abiFilters.add("arm64-v8a")
