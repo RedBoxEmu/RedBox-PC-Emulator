@@ -1,9 +1,16 @@
 package com.rimvydop.redboxpcemulator
 
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.Icons
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.animation.core.animateDpAsState
 import android.view.KeyEvent
 import java.net.HttpURLConnection
 import java.net.URL
-
+import androidx.compose.material3.Icon
 import android.net.Uri
 import android.content.Intent
 import android.content.ComponentName
@@ -34,6 +41,13 @@ import androidx.activity.compose.setContent
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.slideInVertically
+import androidx.compose.ui.draw.alpha
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -159,7 +173,7 @@ private object RedBoxSupportLog {
 
         return buildString {
             appendLine("RedBox PC Emulator Support Log")
-            appendLine("App version: 0.2.2")
+            appendLine("App version: 1.0.0")
             appendLine("Android: ${android.os.Build.VERSION.RELEASE} (API ${android.os.Build.VERSION.SDK_INT})")
             appendLine("Device: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
             appendLine("ABI: ${android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown"}")
@@ -1178,6 +1192,15 @@ class MainActivity : SDLActivity() {
      * This is forwarded through Messenger to QemuService, so input reaches
      * the QEMU instance running inside the isolated :qemu process.
      */
+    /**
+     * Tap-to-click for the VM touch surface. Sends a complete left-button
+     * press/release pair through the existing QEMU IPC path.
+     */
+    fun clickRedBoxMouse() {
+        sendRedBoxMouseButton(button = 0, down = true)
+        sendRedBoxMouseButton(button = 0, down = false)
+    }
+
     private fun sendRedBoxMouseButton(
         button: Int,
         down: Boolean
@@ -1563,7 +1586,7 @@ class MainActivity : SDLActivity() {
 
         val qemuStatus = nativeQemuStatus()
         Log.d("RedBoxQEMU", qemuStatus)
-        RedBoxSupportLog.add("RedBox 0.2.2 started; native QEMU status: $qemuStatus")
+        RedBoxSupportLog.add("RedBox 1.0.0 started; native QEMU status: $qemuStatus")
 
         // Stage 5B: load/migrate first, then expose the complete VM library.
         loadSavedVM()
@@ -1803,13 +1826,27 @@ fun RedBoxApp(
         )
     }
 
+    val setupPreferences = remember {
+        context.getSharedPreferences("redbox_v1_setup", Context.MODE_PRIVATE)
+    }
+    // Existing installations keep their current setup; only new installations
+    // with no profile preferences enter first-time setup.
+    var showFirstSetup by rememberSaveable {
+        mutableStateOf(
+            !setupPreferences.getBoolean("completed", false) &&
+                !profilePreferences.contains("profile_name") &&
+                !profilePreferences.contains("profile_avatar_uri")
+        )
+    }
     var showWelcomeScreen by rememberSaveable {
         mutableStateOf(true)
     }
 
-    LaunchedEffect(showWelcomeScreen) {
-        if (showWelcomeScreen) {
-            delay(1800L)
+    // Restart the welcome timer when first-time setup finishes.
+    // Without showFirstSetup in the key, the loading screen can loop forever.
+    LaunchedEffect(showWelcomeScreen, showFirstSetup) {
+        if (showWelcomeScreen && !showFirstSetup) {
+            delay(2200L)
             showWelcomeScreen = false
         }
     }
@@ -2335,6 +2372,24 @@ fun RedBoxApp(
         return
     }
 
+    if (showFirstSetup) {
+        RedBoxMaterialTheme(darkTheme = darkTheme) {
+            RedBoxFirstTimeSetup(
+                initialName = profileName,
+                darkTheme = darkTheme,
+                onThemeChanged = { darkTheme = it },
+                onFinish = { chosenName ->
+                    val safeName = chosenName.trim().take(32).ifEmpty { "User" }
+                    profileName = safeName
+                    profilePreferences.edit().putString("profile_name", safeName).apply()
+                    setupPreferences.edit().putBoolean("completed", true).apply()
+                    showFirstSetup = false
+                }
+            )
+        }
+        return
+    }
+
     if (showWelcomeScreen) {
         RedBoxMaterialTheme(darkTheme = darkTheme) {
             RedBoxWelcomeScreen(
@@ -2360,7 +2415,7 @@ fun RedBoxApp(
         ) { innerPadding ->
 
             when (selectedTab) {
-                0 -> RedBoxHomeMaterial(
+                0 -> RedBoxNextHome(
                     modifier = Modifier.padding(innerPadding),
                     createdVM = selectedVM ?: savedVMs.firstOrNull(),
                     isRunning =
@@ -2388,7 +2443,7 @@ fun RedBoxApp(
                     }
                 )
 
-                1 -> RedBoxVMsMaterial(
+                1 -> RedBoxPremiumLibrary(
                     modifier = Modifier.padding(innerPadding),
                     savedVMs = savedVMs,
                     runningVMIndex = runningVMIndex,
@@ -2444,55 +2499,104 @@ fun RedBoxApp(
 }
 
 @Composable
+private fun RedBoxFirstTimeSetup(
+    initialName: String,
+    darkTheme: Boolean,
+    onThemeChanged: (Boolean) -> Unit,
+    onFinish: (String) -> Unit
+) {
+    var displayName by rememberSaveable { mutableStateOf(initialName) }
+    Column(
+        modifier = Modifier.fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 28.dp, vertical = 42.dp),
+        verticalArrangement = Arrangement.spacedBy(20.dp)
+    ) {
+        Image(
+            painter = painterResource(R.drawable.redbox_logo),
+            contentDescription = "RedBox logo",
+            modifier = Modifier.size(82.dp)
+        )
+        Text("WELCOME TO REDBOX", color = MaterialTheme.colorScheme.primary,
+            fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        Text("Make it yours.", fontSize = 34.sp, fontWeight = FontWeight.Bold)
+        Text("Set up your personal PC emulator experience. No account or internet connection required.",
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Surface(shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)) {
+            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                Text("YOUR PROFILE", fontWeight = FontWeight.Bold, fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.primary)
+                OutlinedTextField(
+                    value = displayName,
+                    onValueChange = { displayName = it.take(32) },
+                    label = { Text("Display name") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp)
+                )
+                Text("APPEARANCE", fontWeight = FontWeight.Bold, fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.primary)
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween) {
+                    Column {
+                        Text("Dark mode", fontWeight = FontWeight.SemiBold)
+                        Text("Choose your preferred appearance", fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Switch(checked = darkTheme, onCheckedChange = onThemeChanged)
+                }
+            }
+        }
+        Spacer(Modifier.weight(1f, fill = false))
+        Button(
+            onClick = { onFinish(displayName) },
+            modifier = Modifier.fillMaxWidth().height(54.dp),
+            shape = RoundedCornerShape(18.dp)
+        ) { Text("Start using RedBox", fontWeight = FontWeight.Bold) }
+        Text("Your virtual machines and local files remain on your device.",
+            modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center,
+            fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@Composable
 private fun RedBoxWelcomeScreen(
     profileName: String,
     profileAvatarUri: String
 ) {
+    var revealed by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { revealed = true }
     Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background),
+        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
         contentAlignment = Alignment.Center
     ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally
+        AnimatedVisibility(
+            visible = revealed,
+            enter = fadeIn(tween(700)) + slideInVertically(tween(700)) { it / 7 }
         ) {
-            RedBoxProfileAvatar(
-                avatarUri = profileAvatarUri,
-                size = 92,
-                fallbackLetter = profileName.firstOrNull()?.uppercase() ?: "R"
-            )
-
-            Spacer(modifier = Modifier.height(24.dp))
-
-            Text(
-                text = profileName,
-                fontSize = 30.sp,
-                fontWeight = FontWeight.SemiBold
-            )
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            Text(
-                text = "Welcome",
-                fontSize = 18.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            Spacer(modifier = Modifier.height(24.dp))
-
-            CircularProgressIndicator(
-                modifier = Modifier.size(26.dp),
-                strokeWidth = 3.dp
-            )
-
-            Spacer(modifier = Modifier.height(18.dp))
-
-            Text(
-                text = "RedBox PC Emulator",
-                fontSize = 13.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Column(horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.padding(28.dp)) {
+                Image(painter = painterResource(R.drawable.redbox_logo),
+                    contentDescription = "RedBox", modifier = Modifier.size(104.dp))
+                Spacer(Modifier.height(24.dp))
+                Text("REDBOX", fontSize = 13.sp, fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.height(12.dp))
+                Text("Welcome back,", fontSize = 19.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(profileName, fontSize = 34.sp, fontWeight = FontWeight.Bold,
+                    textAlign = TextAlign.Center)
+                Spacer(Modifier.height(22.dp))
+                RedBoxProfileAvatar(avatarUri = profileAvatarUri, size = 58,
+                    fallbackLetter = profileName.firstOrNull()?.uppercase() ?: "R")
+                Spacer(Modifier.height(30.dp))
+                CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.5.dp,
+                    color = MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.height(16.dp))
+                Text("Preparing your workspace", fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
     }
 }
@@ -2542,112 +2646,86 @@ private fun RedBoxBottomBar(
     selectedTab: Int,
     onSelected: (Int) -> Unit
 ) {
-    Surface(
-        color = Color.Transparent
+    val labels = listOf("Home", "VMs", "Files", "Settings")
+    val icons = listOf(
+        Icons.Filled.Home,
+        Icons.Filled.List,
+        Icons.Filled.Menu,
+        Icons.Filled.Settings
+    )
+    val accent = MaterialTheme.colorScheme.primary
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .navigationBarsPadding()
+            .padding(horizontal = 16.dp, vertical = 9.dp),
+        contentAlignment = Alignment.Center
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 10.dp),
-            contentAlignment = Alignment.Center
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(28.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 8.dp,
+            shadowElevation = 12.dp,
+            border = androidx.compose.foundation.BorderStroke(
+                1.dp,
+                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
+            )
         ) {
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(24.dp),
-                color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 10.dp,
-                shadowElevation = 10.dp
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 7.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp, vertical = 7.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    RedBoxNavigationItem(
-                        selected = selectedTab == 0,
-                        icon = "🏠",
-                        label = "Home",
-                        onClick = { onSelected(0) }
+                labels.forEachIndexed { index, label ->
+                    val selected = selectedTab == index
+                    val highlight by animateFloatAsState(
+                        targetValue = if (selected) 1f else 0f,
+                        animationSpec = tween(durationMillis = 260),
+                        label = "navHighlight"
                     )
-
-                    RedBoxNavigationItem(
-                        selected = selectedTab == 1,
-                        icon = "🖥️",
-                        label = "VMs",
-                        onClick = { onSelected(1) }
+                    val iconSize by animateDpAsState(
+                        targetValue = if (selected) 25.dp else 22.dp,
+                        animationSpec = tween(durationMillis = 260),
+                        label = "navIcon"
                     )
-
-                    RedBoxNavigationItem(
-                        selected = selectedTab == 2,
-                        icon = "📁",
-                        label = "Files",
-                        onClick = { onSelected(2) }
-                    )
-
-                    RedBoxNavigationItem(
-                        selected = selectedTab == 3,
-                        icon = "⚙️",
-                        label = "Settings",
-                        onClick = { onSelected(3) }
-                    )
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(horizontal = 2.dp)
+                            .clip(RoundedCornerShape(20.dp))
+                            .background(accent.copy(alpha = 0.14f * highlight))
+                            .clickable { onSelected(index) }
+                            .padding(vertical = 9.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            imageVector = icons[index],
+                            contentDescription = label,
+                            tint = if (selected) accent else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(iconSize)
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = label,
+                            fontSize = 11.sp,
+                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                            color = if (selected) accent else MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Box(
+                            modifier = Modifier
+                                .width(if (selected) 18.dp else 4.dp)
+                                .height(3.dp)
+                                .clip(RoundedCornerShape(100.dp))
+                                .background(accent.copy(alpha = highlight))
+                        )
+                    }
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun RowScope.RedBoxNavigationItem(
-    selected: Boolean,
-    icon: String,
-    label: String,
-    onClick: () -> Unit
-) {
-    Surface(
-        modifier = Modifier
-            .weight(1f)
-            .padding(horizontal = 3.dp),
-        shape = RoundedCornerShape(18.dp),
-        color =
-            if (selected) {
-                MaterialTheme.colorScheme.primaryContainer
-            } else {
-                Color.Transparent
-            }
-    ) {
-        Column(
-            modifier = Modifier
-                .clickable(onClick = onClick)
-                .padding(horizontal = 4.dp, vertical = 8.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Text(
-                text = icon,
-                fontSize = if (selected) 20.sp else 18.sp,
-                fontWeight = FontWeight.Bold,
-                color =
-                    if (selected) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    }
-            )
-
-            Spacer(modifier = Modifier.height(3.dp))
-
-            Text(
-                text = label,
-                fontSize = 11.sp,
-                fontWeight =
-                    if (selected) FontWeight.Bold else FontWeight.Medium,
-                color =
-                    if (selected) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    }
-            )
         }
     }
 }
@@ -2663,123 +2741,134 @@ private fun RedBoxHomeMaterial(
     onVmsClick: () -> Unit,
     onQuickAccess: (String) -> Unit
 ) {
+    var revealed by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { revealed = true }
+    val red = Color(0xFFFF454F)
     Column(
-        modifier = modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 18.dp, vertical = 14.dp)
+        modifier = modifier.fillMaxSize().verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp, vertical = 20.dp)
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            RedBoxLogo(modifier = Modifier.size(48.dp))
-
-            Spacer(modifier = Modifier.width(12.dp))
-
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "RedBox PC Emulator",
-                    fontSize = 21.sp,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = "Your virtual PCs in one place",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 12.sp
-                )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Surface(shape = RoundedCornerShape(18.dp), color = red) {
+                Text("R", modifier = Modifier.padding(horizontal = 17.dp, vertical = 10.dp),
+                    color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.Black)
             }
-
-            Surface(
-                shape = RoundedCornerShape(50),
-                color = MaterialTheme.colorScheme.surfaceVariant
-            ) {
-                Text(
-                    text = "v0.2.2",
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
+            Spacer(Modifier.width(13.dp))
+            Column(Modifier.weight(1f)) {
+                Text("REDBOX", fontWeight = FontWeight.Black, fontSize = 22.sp,
+                    letterSpacing = 2.sp)
+                Text("YOUR VIRTUAL WORKSPACE", fontSize = 9.sp,
+                    letterSpacing = 1.4.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Surface(shape = RoundedCornerShape(50), color = MaterialTheme.colorScheme.surfaceVariant) {
+                Text("v1.0.0", modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    fontSize = 10.sp, fontWeight = FontWeight.Bold)
             }
         }
-
-        Spacer(modifier = Modifier.height(22.dp))
-
-        RedBoxHeroCard(
-            hasVm = createdVM != null,
-            onCreateVM = onCreateVM,
-            onVmsClick = onVmsClick
-        )
-
-        Spacer(modifier = Modifier.height(24.dp))
-
-        SectionHeader(
-            title = if (createdVM != null) "Continue" else "Virtual Machines",
-            action = if (createdVM != null) "View all" else null,
-            onAction = onVmsClick
-        )
-
-        Spacer(modifier = Modifier.height(10.dp))
-
-        if (createdVM == null) {
-            EmptyVMCard(onCreateVM)
-        } else {
-            VMHomeCard(
-                vm = createdVM,
-                isRunning = isRunning,
-                onClick = onVMClick
-            )
+        Spacer(Modifier.height(30.dp))
+        AnimatedVisibility(visible = revealed, enter = fadeIn(tween(500)) + slideInVertically(tween(500)) { it / 5 }) {
+            Column {
+                Text("YOUR COMMAND", fontSize = 12.sp, fontWeight = FontWeight.Bold,
+                    letterSpacing = 3.sp, color = red)
+                Text("Your PC.\nYour rules.", fontSize = 38.sp, lineHeight = 42.sp, fontWeight = FontWeight.Black,
+                    letterSpacing = (-1).sp)
+                Spacer(Modifier.height(18.dp))
+                Surface(shape = RoundedCornerShape(26.dp), color = MaterialTheme.colorScheme.surfaceVariant,
+                    modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(24.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Surface(color = Color(0xFF3A292D), shape = RoundedCornerShape(50)) {
+                                Text(if (isRunning) "●  RUNNING" else "●  READY",
+                                    modifier = Modifier.padding(horizontal = 13.dp, vertical = 8.dp),
+                                    fontSize = 10.sp, fontWeight = FontWeight.Bold, color = red)
+                            }
+                            Spacer(Modifier.weight(1f))
+                            Text("↗", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 23.sp)
+                        }
+                        Spacer(Modifier.height(30.dp))
+                        Text("FEATURED MACHINE", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp,
+                            letterSpacing = 2.sp)
+                        Spacer(Modifier.height(7.dp))
+                        Text(createdVM?.name ?: "Your first PC awaits", color = MaterialTheme.colorScheme.onSurface,
+                            fontSize = 28.sp, fontWeight = FontWeight.Black)
+                        Text(if (createdVM == null) "Build a virtual machine to get started."
+                            else if (isRunning) "Your virtual machine is running"
+                            else "Configured and ready for your next session",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                        Spacer(Modifier.height(25.dp))
+                        Button(onClick = if (createdVM == null) onCreateVM else onVMClick,
+                            modifier = Modifier.fillMaxWidth().height(54.dp),
+                            shape = RoundedCornerShape(16.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = red)) {
+                            Text(if (createdVM == null) "+  CREATE FIRST MACHINE" else "OPEN MACHINE  →",
+                                color = Color.White, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
         }
-
-        Spacer(modifier = Modifier.height(24.dp))
-
-        Text(
-            text = "Quick Access",
-            fontSize = 19.sp,
-            fontWeight = FontWeight.Bold
-        )
-
-        Spacer(modifier = Modifier.height(10.dp))
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            QuickAccessCard(
-                modifier = Modifier.weight(1f),
-                icon = "🪟",
-                title = "Windows",
-                subtitle = "PC images",
-                onClick = { onQuickAccess("Windows") }
-            )
-
-            QuickAccessCard(
-                modifier = Modifier.weight(1f),
-                icon = "🤖",
-                title = "Android",
-                subtitle = "x86 images",
-                onClick = { onQuickAccess("Android") }
-            )
-
-            QuickAccessCard(
-                modifier = Modifier.weight(1f),
-                icon = "🐧",
-                title = "Linux",
-                subtitle = "Distributions",
-                onClick = { onQuickAccess("Linux") }
-            )
+        Spacer(Modifier.height(24.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("QUICK ACTIONS", fontSize = 13.sp, letterSpacing = 1.7.sp,
+                fontWeight = FontWeight.Black, modifier = Modifier.weight(1f))
+            Text("EXPLORE  →", modifier = Modifier.clickable(onClick = onVmsClick),
+                fontSize = 11.sp, color = red, fontWeight = FontWeight.Bold)
         }
+        Spacer(Modifier.height(14.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            NextActionTile("＋", "New PC", "Create a VM", Modifier.weight(1f), onCreateVM)
+            NextActionTile("▣", "My VMs", "Manage library", Modifier.weight(1f), onVmsClick)
+        }
+        Spacer(Modifier.height(28.dp))
+        Text("EXPLORE SYSTEMS", fontSize = 13.sp, letterSpacing = 1.4.sp, fontWeight = FontWeight.Black)
+        Spacer(Modifier.height(12.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            listOf("Windows", "Linux", "Android").forEach { name ->
+                Surface(modifier = Modifier.weight(1f).clickable { onQuickAccess(name) },
+                    shape = RoundedCornerShape(18.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant) {
+                    Column(Modifier.padding(vertical = 20.dp, horizontal = 8.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(when (name) { "Windows" -> "⊞"; "Linux" -> "⌘"; else -> "◈" },
+                            fontSize = 25.sp, color = red)
+                        Spacer(Modifier.height(7.dp))
+                        Text(name, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(26.dp))
+        Text("ENGINE STATUS", fontSize = 13.sp, letterSpacing = 1.7.sp, fontWeight = FontWeight.Black)
+        Spacer(Modifier.height(12.dp))
+        Surface(color = MaterialTheme.colorScheme.surfaceVariant,
+            shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
+            Row(Modifier.padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("◉", fontSize = 25.sp, color = red)
+                Spacer(Modifier.width(12.dp))
+                Column {
+                    Text("RedBox Engine", fontWeight = FontWeight.Bold)
+                    Text(qemuStatus.ifBlank { "Emulation core standing by" }, fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)
+                }
+            }
+        }
+        Spacer(Modifier.height(20.dp))
+    }
+}
 
-        Spacer(modifier = Modifier.height(24.dp))
-
-        SectionHeader(title = "System")
-
-        Spacer(modifier = Modifier.height(10.dp))
-
-        EngineCard(qemuStatus)
-
-        Spacer(modifier = Modifier.height(18.dp))
+@Composable
+private fun NextActionTile(symbol: String, title: String, subtitle: String,
+    modifier: Modifier, onClick: () -> Unit) {
+    Surface(modifier = modifier.clickable(onClick = onClick),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        shape = RoundedCornerShape(24.dp)) {
+        Column(Modifier.padding(19.dp)) {
+            Text(symbol, fontSize = 31.sp, color = Color(0xFFFF454F))
+            Spacer(Modifier.height(20.dp))
+            Text(title, fontSize = 17.sp, fontWeight = FontWeight.Black)
+            Text(subtitle, fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 }
 
@@ -3236,6 +3325,41 @@ private fun EngineCard(qemuStatus: String) {
 
 
 @Composable
+private fun RedBoxSectionBanner(
+    eyebrow: String,
+    title: String,
+    description: String
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(22.dp),
+        color = MaterialTheme.colorScheme.primaryContainer
+    ) {
+        Column(modifier = Modifier.padding(20.dp)) {
+            Text(
+                text = eyebrow.uppercase(),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Spacer(modifier = Modifier.height(7.dp))
+            Text(
+                text = title,
+                fontSize = 23.sp,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onPrimaryContainer
+            )
+            Spacer(modifier = Modifier.height(5.dp))
+            Text(
+                text = description,
+                fontSize = 13.sp,
+                color = MaterialTheme.colorScheme.onPrimaryContainer
+            )
+        }
+    }
+}
+
+@Composable
 private fun RedBoxVMsMaterial(
     modifier: Modifier,
     savedVMs: List<VMModel>,
@@ -3293,6 +3417,12 @@ private fun RedBoxVMsMaterial(
         }
 
         Spacer(modifier = Modifier.height(18.dp))
+        RedBoxSectionBanner(
+            eyebrow = "YOUR WORKSPACE",
+            title = "All your virtual PCs",
+            description = "Create, organize and launch machines from one place."
+        )
+        Spacer(modifier = Modifier.height(16.dp))
 
         Card(
             modifier = Modifier.fillMaxWidth(),
@@ -3504,6 +3634,12 @@ private fun RedBoxFilesMaterial(
         )
 
         Spacer(modifier = Modifier.height(14.dp))
+        RedBoxSectionBanner(
+            eyebrow = "DISK LIBRARY",
+            title = "Your operating system media",
+            description = "Browse ISO images and virtual disks for your machines."
+        )
+        Spacer(modifier = Modifier.height(16.dp))
 
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -3893,7 +4029,7 @@ private fun RedBoxSettingsMaterial(
             title = { Text("About RedBox") },
             text = {
                 Text(
-                    "RedBox PC Emulator\nVersion 0.2.2\n\n" +
+                    "RedBox PC Emulator\nVersion 1.0.0\n\n" +
                             "A QEMU-based PC emulator for Android.\n\n" +
                             "Run. Explore. Create."
                 )
@@ -3909,33 +4045,30 @@ private fun RedBoxSettingsMaterial(
     if (showWhatsNewDialog) {
         AlertDialog(
             onDismissRequest = { showWhatsNewDialog = false },
-            title = { Text("What's New in v0.2.2") },
+            title = { Text("What's New in v1.0.0") },
             text = {
                 Column(
                     modifier = Modifier
                         .height(420.dp)
                         .verticalScroll(rememberScrollState())
                 ) {
-                    Text("Check for Updates", fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                    Text(
-                        "Check the latest RedBox release on GitHub, and open GitHub Releases or Google Play from Settings.",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 13.sp
-                    )
+                    Text("Version 1.0.0 — A New Era", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                    Text("A major RedBox interface refresh, built around a cleaner PC emulation experience.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text("Premium Home & VM Library", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                    Text("Redesigned home dashboard, VM library and navigation with a modern RedBox look.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
                     Spacer(modifier = Modifier.height(14.dp))
-                    Text("My Socials", fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                    Text(
-                        "Find the developer's social links directly in RedBox Settings.",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 13.sp
-                    )
+                    Text("Create VM Redesign", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                    Text("A refreshed virtual machine creation experience with OS choices and CPU/RAM controls.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
                     Spacer(modifier = Modifier.height(14.dp))
-                    Text("Refreshed UI icons", fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                    Text(
-                        "Updated internal interface icons while keeping the original RedBox app logo.",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 13.sp
-                    )
+                    Text("Welcome & Setup", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                    Text("A refreshed welcome and first-run setup experience.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Text("VM Toolbar & Display Options", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                    Text("Improved in-VM toolbar controls and FPS/refresh-rate selection.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Text("Settings & Update Checker", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                    Text("Refreshed Settings, current installed version display and GitHub release checking.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
                 }
             },
             confirmButton = {
@@ -4017,7 +4150,7 @@ private fun RedBoxSettingsMaterial(
                     onClick = {
                         val shareIntent = Intent(Intent.ACTION_SEND).apply {
                             type = "text/plain"
-                            putExtra(Intent.EXTRA_SUBJECT, "RedBox 0.2.2 Support Log")
+                            putExtra(Intent.EXTRA_SUBJECT, "RedBox 1.0.0 Support Log")
                             putExtra(Intent.EXTRA_TEXT, report)
                         }
                         context.startActivity(
@@ -4104,218 +4237,155 @@ private fun RedBoxSettingsMaterial(
         )
     }
 
+    val installedVersion = remember(context.packageName) {
+        try { context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.0" }
+        catch (_: Exception) { "1.0.0" }
+    }
+    var selectedCategory by rememberSaveable { mutableStateOf("Personal") }
+    val categories = listOf("Personal", "App & tools", "Community")
+
     Column(
-        modifier = modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(
-                horizontal = 18.dp,
-                vertical = 14.dp
-            )
+        modifier = modifier.fillMaxSize().verticalScroll(rememberScrollState())
+            .padding(horizontal = 18.dp, vertical = 14.dp)
     ) {
-        Text(
-            text = "Settings",
-            fontSize = 30.sp,
-            fontWeight = FontWeight.Bold
-        )
-
-        Spacer(modifier = Modifier.height(18.dp))
-
-        SettingsCard {
-            SettingsRow(
-                icon = "👤",
-                title = "Profile",
-                subtitle = "$profileName • Name & avatar",
-                onClick = {
-                    profileNameDraft = profileName
-                    showProfileDialog = true
-                }
-            )
-
-            SettingsDivider()
-
-            SettingsRow(
-                icon = "❤️",
-                title = "Donate Me — €4.99",
-                subtitle = "Support RedBox development with a one-time donation",
-                onClick = onDonate
-            )
-
-            SettingsDivider()
-
-            SettingsRow(
-                icon = "🌙",
-                title = "Dark Theme",
-                subtitle =
-                    if (darkTheme) {
-                        "Dark appearance"
-                    } else {
-                        "Light appearance"
-                    },
-                trailing = {
-                    Switch(
-                        checked = darkTheme,
-                        onCheckedChange =
-                            onDarkThemeChanged
-                    )
-                }
-            )
-
-            SettingsDivider()
-
-            SettingsRow(
-                icon = "ℹ️",
-                title = "About RedBox",
-                subtitle = "RedBox PC Emulator • Version 0.2.2",
-                onClick = { showAboutDialog = true }
-            )
-
-            SettingsDivider()
-
-            SettingsRow(
-                icon = "✨",
-                title = "What's New",
-                subtitle = "See what's new in version 0.2.2",
-                onClick = { showWhatsNewDialog = true }
-            )
-
-            SettingsDivider()
-
-            SettingsRow(
-                icon = "🔄",
-                title = "Check for Update",
-                subtitle = "Version 0.2.2",
-                onClick = { showUpdateDialog = true }
-            )
-
-            SettingsDivider()
-
-            SettingsRow(
-                icon = "💾",
-                title = "Storage Location",
-                subtitle = "Internal Storage",
-                onClick = { showStorageDialog = true }
-            )
-
-            SettingsDivider()
-
-            SettingsRow(
-                icon = "📋",
-                title = "Support Diagnostic Log",
-                subtitle = "Copy or share recent RedBox events",
-                onClick = { showSupportLogDialog = true }
-            )
-
-            SettingsDivider()
-
-            SettingsRow(
-                icon = "🧹",
-                title = "Clear Cache",
-                subtitle = "Manage temporary files",
-                onClick = { showClearCacheDialog = true }
-            )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("REDBOX / CONTROL CENTER", color = MaterialTheme.colorScheme.primary,
+                    fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(5.dp))
+                Text("Your settings.", fontSize = 30.sp, fontWeight = FontWeight.Bold)
+                Text("Your PC. Your rules.", color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 13.sp)
+            }
+            Image(painter = painterResource(id = R.drawable.redbox_logo),
+                contentDescription = "RedBox logo", modifier = Modifier.size(68.dp).clip(RoundedCornerShape(18.dp)),
+                contentScale = ContentScale.Fit)
         }
+        Spacer(Modifier.height(18.dp))
 
-        Spacer(modifier = Modifier.height(22.dp))
-
-        Text(
-            text = "My Socials",
-            fontSize = 20.sp,
-            fontWeight = FontWeight.Bold
-        )
-
-        Spacer(modifier = Modifier.height(10.dp))
-
-        SettingsCard {
-            SettingsRow(
-                icon = "▶️",
-                title = "RimvydopPlus — YouTube",
-                subtitle = "@rimvydoplus",
-                onClick = {
-                    openUpdateLink("https://www.youtube.com/@rimvydoplus")
+        Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(26.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
+            Column(Modifier.padding(20.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    RedBoxProfileAvatar(avatarUri = profileAvatarUri, size = 58,
+                        fallbackLetter = profileName.firstOrNull()?.uppercaseChar()?.toString() ?: "R")
+                    Spacer(Modifier.width(14.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("WELCOME BACK", fontSize = 10.sp, fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = .7f))
+                        Text(profileName, fontSize = 21.sp, fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer)
+                        Text("RedBox member", fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = .75f))
+                    }
                 }
-            )
-
-            SettingsDivider()
-
-            SettingsRow(
-                icon = "▶️",
-                title = "RedBox — YouTube",
-                subtitle = "@RedBox-pc",
-                onClick = {
-                    openUpdateLink("https://www.youtube.com/@RedBox-pc")
-                }
-            )
-
-            SettingsDivider()
-
-            SettingsRow(
-                icon = "💬",
-                title = "RedBox Discord Server",
-                subtitle = "Join our Discord community",
-                onClick = {
-                    openUpdateLink("https://discord.com/invite/aDcg5mqFc5")
-                }
-            )
-        }
-
-        Spacer(modifier = Modifier.height(18.dp))
-
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(20.dp),
-            colors = CardDefaults.cardColors(
-                containerColor =
-                    MaterialTheme.colorScheme.surface
-            )
-        ) {
-            Row(
-                modifier = Modifier.padding(18.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                RedBoxLogo(
-                    modifier = Modifier.size(52.dp)
-                )
-
-                Spacer(modifier = Modifier.width(12.dp))
-
-                Column {
-                    Text(
-                        text = "RedBox PC Emulator",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 16.sp
-                    )
-
-                    Text(
-                        text = "Version 0.2.2",
-                        color =
-                            MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 12.sp
-                    )
-
-                    Spacer(modifier = Modifier.height(3.dp))
-
-                    Text(
-                        text = "Run. Explore. Create.",
-                        color =
-                            MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 12.sp
-                    )
+                Spacer(Modifier.height(15.dp))
+                Button(onClick = { profileNameDraft = profileName; showProfileDialog = true },
+                    modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp)) {
+                    Text("Edit profile & avatar")
                 }
             }
         }
+        Spacer(Modifier.height(20.dp))
+        Text("PREFERENCES", fontSize = 11.sp, fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(7.dp), modifier = Modifier.fillMaxWidth()) {
+            categories.forEach { category ->
+                FilterChip(selected = selectedCategory == category,
+                    onClick = { selectedCategory = category }, label = {
+                        Text(category, fontSize = 11.sp, maxLines = 1)
+                    }, modifier = Modifier.weight(1f))
+            }
+        }
+        Spacer(Modifier.height(14.dp))
 
-        Spacer(modifier = Modifier.height(18.dp))
-
-        Text(
-            text = "Material Design 3  •  RedBox",
-            modifier = Modifier.fillMaxWidth(),
-            color =
-                MaterialTheme.colorScheme.onSurfaceVariant,
-            fontSize = 11.sp,
-            textAlign = TextAlign.Center
-        )
+        androidx.compose.animation.AnimatedContent(
+            targetState = selectedCategory,
+            transitionSpec = {
+                (androidx.compose.animation.fadeIn(animationSpec = tween(220)) +
+                    androidx.compose.animation.slideInVertically(animationSpec = tween(220)) { it / 8 })
+                    .togetherWith(androidx.compose.animation.fadeOut(animationSpec = tween(120)))
+            }, label = "Settings categories"
+        ) { category ->
+            Column {
+                when (category) {
+                    "Personal" -> {
+                        SettingsCard {
+                            SettingsRow(icon = "🌙", title = "Appearance",
+                                subtitle = if (darkTheme) "Dark mode enabled" else "Light mode enabled",
+                                trailing = { Switch(checked = darkTheme, onCheckedChange = onDarkThemeChanged) },
+                                onClick = { onDarkThemeChanged(!darkTheme) })
+                            SettingsDivider()
+                            SettingsRow(icon = "👤", title = "Profile & avatar",
+                                subtitle = "Change your display name and photo",
+                                onClick = { profileNameDraft = profileName; showProfileDialog = true })
+                            SettingsDivider()
+                            SettingsRow(icon = "❤️", title = "Support RedBox — €4.99",
+                                subtitle = "One-time donation to support development", onClick = onDonate)
+                        }
+                    }
+                    "App & tools" -> {
+                        SettingsCard {
+                            SettingsRow(icon = "🔄", title = "Check for updates",
+                                subtitle = "Installed version $installedVersion", onClick = { showUpdateDialog = true })
+                            SettingsDivider()
+                            SettingsRow(icon = "✨", title = "What's new",
+                                subtitle = "See the release notes", onClick = { showWhatsNewDialog = true })
+                            SettingsDivider()
+                            SettingsRow(icon = "💾", title = "Storage location",
+                                subtitle = "View RedBox's internal storage", onClick = { showStorageDialog = true })
+                            SettingsDivider()
+                            SettingsRow(icon = "📋", title = "Diagnostic log",
+                                subtitle = "Copy or share emulator events", onClick = { showSupportLogDialog = true })
+                            SettingsDivider()
+                            SettingsRow(icon = "🧹", title = "Clear cache",
+                                subtitle = "Remove temporary files safely", onClick = { showClearCacheDialog = true })
+                            SettingsDivider()
+                            SettingsRow(icon = "ℹ️", title = "About RedBox",
+                                subtitle = "App information and credits", onClick = { showAboutDialog = true })
+                        }
+                    }
+                    else -> {
+                        SettingsCard {
+                            SettingsRow(icon = "▶️", title = "RimvydopPlus — YouTube",
+                                subtitle = "@rimvydoplus", onClick = {
+                                    openUpdateLink("https://www.youtube.com/@rimvydoplus")
+                                })
+                            SettingsDivider()
+                            SettingsRow(icon = "▶️", title = "RedBox — YouTube",
+                                subtitle = "@RedBox-pc", onClick = {
+                                    openUpdateLink("https://www.youtube.com/@RedBox-pc")
+                                })
+                            SettingsDivider()
+                            SettingsRow(icon = "💬", title = "RedBox Discord",
+                                subtitle = "Join our community", onClick = {
+                                    openUpdateLink("https://discord.com/invite/aDcg5mqFc5")
+                                })
+                        }
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(22.dp))
+        Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(22.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+            Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Image(painter = painterResource(id = R.drawable.redbox_logo),
+                    contentDescription = null, modifier = Modifier.size(48.dp).clip(RoundedCornerShape(12.dp)))
+                Spacer(Modifier.width(12.dp))
+                Column {
+                    Text("RedBox PC Emulator", fontWeight = FontWeight.Bold)
+                    Text("Version $installedVersion  •  Powered by QEMU",
+                        fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Run. Explore. Create.", fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+        Spacer(Modifier.height(22.dp))
     }
+
 }
 
 @Composable
@@ -4411,7 +4481,7 @@ private fun RedBoxLogo(
 ) {
     Image(
         painter = painterResource(
-            id = R.drawable.ic_redbox
+            id = R.drawable.redbox_logo
         ),
         contentDescription = "RedBox PC Emulator",
         modifier = modifier
@@ -4523,6 +4593,7 @@ private fun VMDetailsScreen(
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
                                     text = vm.name,
+                                    color = MaterialTheme.colorScheme.onSurface,
                                     fontSize = 22.sp,
                                     fontWeight = FontWeight.Bold
                                 )
@@ -5206,7 +5277,7 @@ private fun EditVMScreen(
 
                     Text("TCG Cache", fontWeight = FontWeight.SemiBold)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf("128 MB", "256 MB", "512 MB").forEach { option ->
+                        listOf("128 MB", "256 MB", "512 MB", "1024 MB", "2048 MB").forEach { option ->
                             FilterChip(
                                 selected = tcgCache == option,
                                 onClick = {

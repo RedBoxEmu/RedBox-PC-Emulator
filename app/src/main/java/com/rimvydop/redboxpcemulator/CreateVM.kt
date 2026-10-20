@@ -6,6 +6,10 @@ import android.system.Os
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
+import androidx.compose.ui.res.painterResource
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -50,6 +54,33 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.material3.Slider
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Computer
+import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Storage
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material3.Icon
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.foundation.layout.PaddingValues
+import kotlin.math.roundToInt
 
 import java.io.File
 
@@ -121,6 +152,7 @@ fun CreateVMScreen(
     val context = androidx.compose.ui.platform.LocalContext.current
     val scrollState = rememberScrollState()
     var createStep by remember { mutableStateOf(0) }
+    var selectedOs by remember { mutableStateOf("Windows") }
 
     val createDiskLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/octet-stream")
@@ -583,15 +615,6 @@ fun CreateVMScreen(
                         },
                         label = { Text("Q35") }
                     )
-                    FilterChip(
-                        selected = machineType == "isapc",
-                        onClick = {
-                            machineType = "isapc"
-                            diskInterface = "IDE"
-                            performancePreset = "Custom"
-                        },
-                        label = { Text("ISA PC (Legacy)") }
-                    )
                 }
             },
             confirmButton = {
@@ -687,7 +710,8 @@ fun CreateVMScreen(
         )
     }
 
-    val stepTitles = listOf("Basics", "Storage", "Devices", "Advanced")
+    val stepTitles = listOf("Machine", "Storage", "Devices", "Advanced")
+    LaunchedEffect(createStep) { scrollState.scrollTo(0) }
 
     Scaffold(
         containerColor = background,
@@ -696,13 +720,13 @@ fun CreateVMScreen(
                 title = {
                     Column {
                         Text(
-                            text = "New Virtual Machine",
+                            text = "Create your PC",
                             color = Color.White,
                             fontWeight = FontWeight.Bold,
                             fontSize = 19.sp
                         )
                         Text(
-                            text = "Step ${createStep + 1} of ${stepTitles.size} · ${stepTitles[createStep]}",
+                            text = "REDBOX  /  STEP ${createStep + 1} OF ${stepTitles.size}",
                             color = secondaryText,
                             fontSize = 11.sp
                         )
@@ -737,6 +761,7 @@ fun CreateVMScreen(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .navigationBarsPadding()
                         .padding(horizontal = 16.dp, vertical = 12.dp)
                 ) {
                     Row(
@@ -784,7 +809,7 @@ fun CreateVMScreen(
                                     disabledContentColor = Color(0xFF777177)
                                 )
                             ) {
-                                Text("Continue", fontWeight = FontWeight.Bold)
+                                Text("Continue  →", fontWeight = FontWeight.Bold)
                             }
                         } else {
                             Button(
@@ -852,165 +877,166 @@ fun CreateVMScreen(
                 .background(background)
                 .verticalScroll(scrollState)
                 .padding(innerPadding)
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                .padding(horizontal = 16.dp, vertical = 12.dp)
+                .animateContentSize(animationSpec = tween(durationMillis = 260)),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Surface(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(18.dp),
-                color = Color(0xFF101218)
+                shape = RoundedCornerShape(28.dp),
+                color = Color(0xFF14151C)
             ) {
-                Row(
-                    modifier = Modifier.padding(14.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Surface(
-                        modifier = Modifier.size(42.dp),
-                        shape = RoundedCornerShape(12.dp),
-                        color = red
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Text(
-                                text = "${createStep + 1}",
-                                color = Color.White,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 18.sp
-                            )
+                Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Image(
+                            painter = painterResource(id = R.drawable.redbox_logo),
+                            contentDescription = "RedBox logo",
+                            modifier = Modifier.size(54.dp).clip(RoundedCornerShape(14.dp))
+                        )
+                        Spacer(Modifier.width(14.dp))
+                        Column {
+                            Text("BUILD YOUR MACHINE", color = red, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            Text(stepTitles[createStep], color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.ExtraBold)
+                            Text("Step ${createStep + 1} of 4 · RedBox VM Studio", color = secondaryText, fontSize = 12.sp)
                         }
                     }
-                    Spacer(modifier = Modifier.size(12.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = stepTitles[createStep],
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 20.sp
-                        )
-                        Text(
-                            text = when (createStep) {
-                                0 -> "Name the VM and choose its core hardware."
-                                1 -> "Attach the system disk, install media and shared storage."
-                                2 -> "Choose graphics, network and sound devices."
-                                else -> "Optional guest date and custom QEMU arguments."
-                            },
-                            color = secondaryText,
-                            fontSize = 12.sp
-                        )
-                    }
+                    LinearProgressIndicator(
+                        progress = { (createStep + 1) / 4f },
+                        modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(9.dp)),
+                        color = red,
+                        trackColor = Color(0xFF30313A)
+                    )
                 }
             }
 
-            when (createStep) {
+            AnimatedContent(
+                targetState = createStep,
+                transitionSpec = {
+                    (fadeIn(tween(240)) + slideInHorizontally(tween(260)) { it / 5 }) togetherWith
+                        (fadeOut(tween(120)) + slideOutHorizontally(tween(180)) { -it / 6 })
+                },
+                label = "RedBox setup steps"
+            ) { animatedStep ->
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            when (animatedStep) {
                 0 -> {
-                    SectionCard(
-                        title = "Virtual Machine",
-                        subtitle = "The essentials. Advanced CPU tuning stays one tap away.",
-                        surfaceColor = surface
-                    ) {
+                    Text("CHOOSE YOUR SYSTEM", color = secondaryText, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf("Windows", "Linux").forEach { os ->
+                            RedBoxOsTile(os, selectedOs == os, red, Modifier.weight(1f)) { selectedOs = os }
+                        }
+                    }
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf("Android", "Other").forEach { os ->
+                            RedBoxOsTile(os, selectedOs == os, red, Modifier.weight(1f)) { selectedOs = os }
+                        }
+                    }
+                    Text("OS selection labels this setup only. Architecture and devices remain your choice.", color = secondaryText, fontSize = 11.sp)
+
+                    SectionCard("MACHINE IDENTITY", "Give your virtual PC a name and architecture.", surface) {
                         OutlinedTextField(
                             value = vmName,
                             onValueChange = { vmName = it },
                             modifier = Modifier.fillMaxWidth(),
-                            textStyle = androidx.compose.ui.text.TextStyle(color = Color.White),
-                            placeholder = { Text("Example: Windows 10", color = Color(0xFF666B75)) },
-                            label = { Text("VM name") },
+                            label = {
+                                Text(
+                                    "Virtual machine name",
+                                    color = Color(0xFFB39DDB)
+                                )
+                            },
+                            placeholder = {
+                                Text(
+                                    "My ${selectedOs} PC",
+                                    color = Color(0xFF888B98)
+                                )
+                            },
+                            textStyle = androidx.compose.ui.text.TextStyle(
+                                color = Color.White
+                            ),
                             singleLine = true,
-                            shape = RoundedCornerShape(14.dp)
+                            shape = RoundedCornerShape(18.dp),
+                            colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = Color.White,
+                                unfocusedTextColor = Color.White,
+                                disabledTextColor = Color.White,
+                                cursorColor = Color(0xFFB39DDB),
+                                focusedLabelColor = Color(0xFFB39DDB),
+                                unfocusedLabelColor = Color(0xFF9A9DA8),
+                                focusedBorderColor = Color(0xFFB39DDB),
+                                unfocusedBorderColor = Color(0xFF41434D),
+                                focusedPlaceholderColor = Color(0xFF888B98),
+                                unfocusedPlaceholderColor = Color(0xFF888B98)
+                            )
                         )
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        Text("Architecture", color = secondaryText, fontSize = 11.sp)
-                        Spacer(modifier = Modifier.height(5.dp))
-                        BoxSelector(
-                            value = architecture,
-                            expanded = architectureMenu,
-                            onClick = { architectureMenu = true },
-                            surfaceColor = surfaceVariant,
-                            accent = red
-                        )
-                        DropdownMenu(
-                            expanded = architectureMenu,
-                            onDismissRequest = { architectureMenu = false }
-                        ) {
+                        Spacer(Modifier.height(12.dp))
+                        Text("Processor architecture", color = secondaryText, fontSize = 12.sp)
+                        Spacer(Modifier.height(6.dp))
+                        BoxSelector(architecture, architectureMenu, { architectureMenu = true }, surfaceVariant, red)
+                        DropdownMenu(expanded = architectureMenu, onDismissRequest = { architectureMenu = false }) {
                             listOf("x86_64", "x86", "ARM64", "ARM").forEach { option ->
-                                DropdownMenuItem(
-                                    text = { Text(option) },
+                                DropdownMenuItem(text = { Text(option) }, onClick = {
+                                    architecture = option
+                                    architectureMenu = false
+                                })
+                            }
+                        }
+                    }
+
+                    SectionCard("PERFORMANCE LAB", "Tune CPU and memory live. Advanced CPU options are still available.", surface) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Filled.Computer, contentDescription = null, tint = red)
+                            Spacer(Modifier.width(10.dp))
+                            Text("CPU CORES", color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                            Text(cpuCores, color = red, fontWeight = FontWeight.Bold)
+                        }
+                        Slider(
+                            value = (cpuCores.substringBefore(' ').toFloatOrNull() ?: 4f),
+                            onValueChange = { value ->
+                                val options = listOf(1, 2, 4, 6, 8)
+                                val nearest = options.minByOrNull { kotlin.math.abs(it - value) } ?: 4
+                                cpuCores = "$nearest ${if (nearest == 1) "core" else "cores"}"
+                            },
+                            valueRange = 1f..8f,
+                            steps = 6
+                        )
+                        OutlinedButton(onClick = { showCpuOptions = true }, modifier = Modifier.fillMaxWidth()) {
+                            Text("Advanced CPU · $cpuModel · $performancePreset")
+                        }
+                        Spacer(Modifier.height(10.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Filled.Memory, contentDescription = null, tint = red)
+                            Spacer(Modifier.width(10.dp))
+                            Text("MEMORY", color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                            Text(ram, color = red, fontWeight = FontWeight.Bold)
+                        }
+                        val ramChoices = listOf(128, 256, 384, 512, 640, 768, 1024, 2048, 4096, 6144, 8192)
+                        val ramIndex = ramChoices.indexOf(ram.substringBefore(' ').toIntOrNull() ?: 4096).coerceAtLeast(0)
+                        Slider(
+                            value = ramIndex.toFloat(),
+                            onValueChange = { ram = "${ramChoices[it.roundToInt().coerceIn(0, ramChoices.lastIndex)]} MB" },
+                            valueRange = 0f..ramChoices.lastIndex.toFloat(),
+                            steps = ramChoices.size - 2
+                        )
+                        OutlinedButton(onClick = { showRamOptions = true }, modifier = Modifier.fillMaxWidth()) {
+                            Text("All memory options")
+                        }
+                    }
+                    SectionCard("CHIPSET", "Choose the emulated PC motherboard.", surface) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            listOf("pc" to "i440FX", "q35" to "Q35").forEach { (value, title) ->
+                                OutlinedButton(
                                     onClick = {
-                                        architecture = option
-                                        architectureMenu = false
-                                    }
-                                )
-                            }
-                        }
-                    }
-
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { showCpuOptions = true },
-                        shape = RoundedCornerShape(18.dp),
-                        colors = CardDefaults.cardColors(containerColor = surface)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(16.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("CPU", color = Color.White, fontWeight = FontWeight.Bold)
-                                Text(
-                                    "$cpuCores · $cpuModel · $performancePreset",
-                                    color = secondaryText,
-                                    fontSize = 12.sp
-                                )
-                            }
-                            Text("Edit", color = red, fontWeight = FontWeight.SemiBold)
-                        }
-                    }
-
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { showRamOptions = true },
-                        shape = RoundedCornerShape(18.dp),
-                        colors = CardDefaults.cardColors(containerColor = surface)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(16.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Memory", color = Color.White, fontWeight = FontWeight.Bold)
-                                Text(ram, color = secondaryText, fontSize = 12.sp)
-                            }
-                            Text("Edit", color = red, fontWeight = FontWeight.SemiBold)
-                        }
-                    }
-
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { showMachineOptions = true },
-                        shape = RoundedCornerShape(18.dp),
-                        colors = CardDefaults.cardColors(containerColor = surface)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(16.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Machine", color = Color.White, fontWeight = FontWeight.Bold)
-                                Text(
-                                    when (machineType) {
-                                        "q35" -> "Q35"
-                                        "isapc" -> "ISA PC (Legacy)"
-                                        else -> "PC (i440FX)"
+                                        machineType = value
+                                        if (value == "q35" && diskInterface == "IDE") diskInterface = "AHCI"
+                                        performancePreset = "Custom"
                                     },
-                                    color = secondaryText,
-                                    fontSize = 12.sp
-                                )
+                                    modifier = Modifier.weight(1f),
+                                    colors = ButtonDefaults.outlinedButtonColors(
+                                        containerColor = if (machineType == value) red.copy(alpha = .20f) else Color.Transparent,
+                                        contentColor = if (machineType == value) Color.White else secondaryText
+                                    )
+                                ) { Text(if (machineType == value) "✓ $title" else title) }
                             }
-                            Text("Edit", color = red, fontWeight = FontWeight.SemiBold)
                         }
                     }
                 }
@@ -1511,7 +1537,8 @@ fun CreateVMScreen(
                     }
                 }
             }
-
+                }
+            }
             Spacer(modifier = Modifier.height(8.dp))
         }
     }
@@ -1526,7 +1553,8 @@ private fun SectionCard(
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
+        shape = RoundedCornerShape(24.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
         colors = CardDefaults.cardColors(containerColor = surfaceColor)
     ) {
         Column(
@@ -1694,5 +1722,55 @@ private fun BoxedFileIcon(accent: Color) {
             fontSize = 18.sp,
             fontWeight = FontWeight.Bold
         )
+    }
+}
+
+@Composable
+private fun RedBoxOsTile(
+    name: String,
+    selected: Boolean,
+    accent: Color,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    val color = if (selected) accent else Color(0xFF22252D)
+    Surface(
+        modifier = modifier.height(90.dp).clickable(onClick = onClick),
+        shape = RoundedCornerShape(22.dp),
+        color = if (selected) Color(0xFF3B171F) else Color(0xFF15171D),
+        border = androidx.compose.foundation.BorderStroke(if (selected) 2.dp else 1.dp, color)
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.SpaceBetween
+        ) {
+            when (name) {
+                "Windows" -> Image(
+                    painter = painterResource(id = R.drawable.redbox_windows_logo),
+                    contentDescription = "Windows logo",
+                    modifier = Modifier.size(30.dp)
+                )
+                "Linux" -> Image(
+                    painter = painterResource(id = R.drawable.redbox_linux_logo),
+                    contentDescription = "Linux logo",
+                    modifier = Modifier.size(30.dp)
+                )
+                "Android" -> Image(
+                    painter = painterResource(id = R.drawable.redbox_android_logo),
+                    contentDescription = "Android logo",
+                    modifier = Modifier.size(30.dp)
+                )
+                else -> Icon(
+                    imageVector = Icons.Filled.Storage,
+                    contentDescription = "Other operating system",
+                    tint = if (selected) accent else Color(0xFF9EA3AD),
+                    modifier = Modifier.size(30.dp)
+                )
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(name, color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                if (selected) Icon(Icons.Filled.CheckCircle, null, tint = accent, modifier = Modifier.size(16.dp))
+            }
+        }
     }
 }

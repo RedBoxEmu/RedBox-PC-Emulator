@@ -16,6 +16,11 @@ local.properties
 .externalNativeBuild/
 **/.externalNativeBuild/
 
+# Signing keys — never commit private keys
+*.jks
+*.keystore
+*.key
+
 # Build outputs
 captures/
 *.apk

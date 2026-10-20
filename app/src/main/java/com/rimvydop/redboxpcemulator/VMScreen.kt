@@ -10,6 +10,12 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import org.libsdl.app.SDLActivity
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -23,6 +29,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.Icon
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Surface
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -97,6 +109,9 @@ fun VMScreen(
         mutableStateOf(0)
     }
 
+    var preferredDisplayFps by remember { mutableStateOf(0) }
+    var showFpsMenu by remember { mutableStateOf(false) }
+
     /*
      * v0.2.0 Mouse Pointer v2
      *
@@ -130,6 +145,9 @@ fun VMScreen(
         mutableStateOf(0f)
     }
     var touchActive by remember {
+        mutableStateOf(false)
+    }
+    var touchMoved by remember {
         mutableStateOf(false)
     }
 
@@ -413,6 +431,7 @@ fun VMScreen(
             ) {
                 VMDisplay(
                     refreshRequest = displayRefreshRequest,
+                    preferredFrameRate = preferredDisplayFps,
                     modifier =
                         if (isFullscreen) {
                             Modifier
@@ -460,6 +479,7 @@ fun VMScreen(
                                         touchLastX = event.x
                                         touchLastY = event.y
                                         touchActive = true
+                                        touchMoved = false
                                         true
                                     }
 
@@ -483,6 +503,7 @@ fun VMScreen(
                                             val dy = historicalY - touchLastY
 
                                             if (dx != 0f || dy != 0f) {
+                                                touchMoved = true
                                                 redBoxActivity?.moveRedBoxMouse(dx * mouseSensitivity, dy * mouseSensitivity)
                                             }
 
@@ -494,6 +515,7 @@ fun VMScreen(
                                         val dy = event.y - touchLastY
 
                                         if (dx != 0f || dy != 0f) {
+                                            touchMoved = true
                                             redBoxActivity?.moveRedBoxMouse(dx * mouseSensitivity, dy * mouseSensitivity)
                                         }
 
@@ -502,9 +524,20 @@ fun VMScreen(
                                         true
                                     }
 
-                                    MotionEvent.ACTION_UP,
+                                    MotionEvent.ACTION_UP -> {
+                                        // A short tap acts as a left click; a swipe only moves the pointer.
+                                        if (touchActive && !touchMoved) {
+                                            redBoxActivity?.clickRedBoxMouse()
+                                        }
+                                        touchActive = false
+                                        touchMoved = false
+                                        view.parent?.requestDisallowInterceptTouchEvent(false)
+                                        true
+                                    }
+
                                     MotionEvent.ACTION_CANCEL -> {
                                         touchActive = false
+                                        touchMoved = false
                                         view.parent?.requestDisallowInterceptTouchEvent(false)
                                         true
                                     }
@@ -516,17 +549,16 @@ fun VMScreen(
                 }
 
                 if (isFullscreen) {
-                    if (showFullscreenToolbar) {
+                    RedBoxVmAnimatedToolbar(visible = showFullscreenToolbar) {
                         Card(
                             modifier = Modifier
-                                .align(Alignment.TopCenter)
                                 .padding(top = 8.dp),
                             shape =
                                 androidx.compose.foundation.shape.RoundedCornerShape(
                                     16.dp
                                 ),
                             colors = CardDefaults.cardColors(
-                                containerColor = Color(0xE6101216)
+                                containerColor = Color(0xF214171F)
                             )
                         ) {
                             Row(
@@ -593,6 +625,33 @@ fun VMScreen(
                                     }
                                 )
 
+                                Box {
+                                    RedBoxToolbarButton(
+                                        icon = "FPS",
+                                        label = if (preferredDisplayFps == 0) "FPS Auto" else "${preferredDisplayFps} FPS",
+                                        onClick = { showFpsMenu = true }
+                                    )
+                                    DropdownMenu(
+                                        expanded = showFpsMenu,
+                                        onDismissRequest = { showFpsMenu = false }
+                                    ) {
+                                        listOf(0, 30, 60, 90, 120).forEach { fps ->
+                                            DropdownMenuItem(
+                                                text = { Text(if (fps == 0) "Auto (system)" else "$fps FPS") },
+                                                leadingIcon = {
+                                                    if (preferredDisplayFps == fps) {
+                                                        Icon(Icons.Filled.Check, contentDescription = null)
+                                                    }
+                                                },
+                                                onClick = {
+                                                    preferredDisplayFps = fps
+                                                    showFpsMenu = false
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
+
                                 RedBoxToolbarButton(
                                     icon = "↻",
                                     label = "Refresh",
@@ -620,7 +679,8 @@ fun VMScreen(
                                 )
                             }
                         }
-                    } else {
+                    }
+                    if (!showFullscreenToolbar) {
                         Card(
                             modifier = Modifier
                                 .align(Alignment.TopCenter)
@@ -793,38 +853,35 @@ private fun RedBoxToolbarButton(
     active: Boolean = false,
     onClick: () -> Unit
 ) {
+    val vector = when (label) {
+        "Keys" -> Icons.Filled.Keyboard
+        "Mouse", "Mouse Off" -> Icons.Filled.Mouse
+        "Settings" -> Icons.Filled.Settings
+        "Refresh" -> Icons.Filled.Refresh
+        "FPS Auto", "30 FPS", "60 FPS", "90 FPS", "120 FPS" -> Icons.Filled.Tune
+        "RedBox" -> Icons.Filled.ArrowBack
+        "Hide" -> Icons.Filled.KeyboardArrowUp
+        else -> Icons.Filled.Tune
+    }
     Column(
         modifier = Modifier
             .clickable(onClick = onClick)
-            .padding(
-                horizontal = 8.dp,
-                vertical = 4.dp
-            ),
+            .padding(horizontal = 9.dp, vertical = 7.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text(
-            text = icon,
-            color =
-                if (active) {
-                    Color(0xFFFF6B66)
-                } else {
-                    Color.White
-                },
-            fontSize = 17.sp,
-            fontWeight = FontWeight.SemiBold
-        )
-
-        Text(
-            text = label,
-            color =
-                if (active) {
-                    Color(0xFFFFB4B0)
-                } else {
-                    Color(0xFFE7E7E7)
-                },
-            fontSize = 9.sp,
-            fontWeight = FontWeight.Medium
-        )
+        Surface(
+            shape = androidx.compose.foundation.shape.RoundedCornerShape(13.dp),
+            color = if (active) Color(0xFF6E2332) else Color(0xFF272C37)
+        ) {
+            Box(Modifier.padding(9.dp), contentAlignment = Alignment.Center) {
+                Icon(vector, contentDescription = label,
+                    tint = if (active) Color(0xFFFF9EAB) else Color.White,
+                    modifier = Modifier.width(20.dp).height(20.dp))
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(label, color = Color(0xFFE8EAF0), fontSize = 10.sp,
+            fontWeight = FontWeight.Medium)
     }
 }
 
@@ -843,8 +900,7 @@ private fun VMControlCard(
                 16.dp
             ),
         colors = CardDefaults.cardColors(
-            containerColor =
-                MaterialTheme.colorScheme.surface
+            containerColor = Color(0xFF1C202A)
         )
     ) {
         Column(
@@ -871,6 +927,23 @@ private fun VMControlCard(
                 fontWeight =
                     FontWeight.SemiBold
             )
+        }
+    }
+}
+
+// Kept outside ColumnScope so Compose selects the correct AnimatedVisibility overload.
+@Composable
+private fun RedBoxVmAnimatedToolbar(
+    visible: Boolean,
+    content: @Composable () -> Unit
+) {
+    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
+        AnimatedVisibility(
+            visible = visible,
+            enter = fadeIn(animationSpec = tween(230)) + scaleIn(initialScale = 0.92f),
+            exit = fadeOut(animationSpec = tween(170)) + scaleOut(targetScale = 0.92f)
+        ) {
+            content()
         }
     }
 }

@@ -1,6 +1,8 @@
 package com.rimvydop.redboxpcemulator
 
 import android.util.Log
+import android.os.Build
+import androidx.compose.runtime.rememberUpdatedState
 import android.view.Surface
 import android.view.SurfaceHolder
 import androidx.compose.runtime.Composable
@@ -12,9 +14,11 @@ import org.libsdl.app.SDLActivity
 fun VMDisplay(
     modifier: Modifier = Modifier,
     refreshRequest: Int = 0,
+    preferredFrameRate: Int = 0,
     onSurfaceReady: (Surface) -> Unit = {},
     onSurfaceDestroyed: () -> Unit = {}
 ) {
+    val currentFrameRate = rememberUpdatedState(preferredFrameRate)
     AndroidView(
         modifier = modifier,
 
@@ -61,6 +65,7 @@ fun VMDisplay(
                             )
 
                             if (holder.surface.isValid) {
+                                applyRedBoxFrameRate(holder.surface, currentFrameRate.value)
                                 val frame = holder.surfaceFrame
                                 activity?.setQemuDisplaySurface(
                                     surface = holder.surface,
@@ -131,6 +136,11 @@ fun VMDisplay(
             }
         },
         update = { surfaceView ->
+            // Apply preference without recreating the SDL Surface.
+            val currentSurface = surfaceView.holder.surface
+            if (currentSurface.isValid) {
+                applyRedBoxFrameRate(currentSurface, preferredFrameRate)
+            }
             // RedBox v0.2.1 - manual display refresh.
             // Reading refreshRequest makes AndroidView's update block run when
             // the toolbar Refresh button increments it. The existing SDL
@@ -141,6 +151,7 @@ fun VMDisplay(
                 val surface = holder.surface
 
                 if (surface.isValid) {
+                    applyRedBoxFrameRate(surface, preferredFrameRate)
                     val frame = holder.surfaceFrame
                     val activity = surfaceView.context as? MainActivity
 
@@ -160,4 +171,17 @@ fun VMDisplay(
             }
         }
     )
+}
+/** Android 11+ display frame-rate hint. Does not cap QEMU's guest FPS. */
+private fun applyRedBoxFrameRate(surface: Surface, fps: Int) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && surface.isValid) {
+        try {
+            surface.setFrameRate(
+                fps.toFloat(),
+                Surface.FRAME_RATE_COMPATIBILITY_DEFAULT
+            )
+        } catch (e: Exception) {
+            Log.w("RedBoxDisplay", "Frame-rate hint not supported", e)
+        }
+    }
 }
