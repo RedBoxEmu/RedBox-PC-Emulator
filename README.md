@@ -189,26 +189,6 @@ RedBox does not include Windows, Windows installation media, product keys, or ot
 
 Users must provide their own legally obtained operating-system installation media and licenses.
 
-## 🛣️ Roadmap
-
-### v0.1.0
-
-First stable RedBox release.
-
-### v0.2.0
-
-The next major development cycle will focus heavily on performance, including research into improved CPU translation and execution beyond the current v0.1.0 configuration.
-
-Other future work includes:
-
-- Improved audio
-- Additional VM configuration
-- Improved VM experience
-- Graphics improvements
-- Performance improvements
-- Additional guest architectures
-- RedBox Accelerator research
-
 ## 🐛 Issues
 
 If you encounter a bug, please open a GitHub issue and include:
