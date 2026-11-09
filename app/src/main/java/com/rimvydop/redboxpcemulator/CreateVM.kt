@@ -72,11 +72,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Storage
-import androidx.compose.material.icons.filled.CheckCircle
+import com.rimvydop.redboxpcemulator.ui.theme.*
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.foundation.layout.PaddingValues
@@ -396,11 +398,11 @@ fun CreateVMScreen(
         }
     }
 
-    val red = Color(0xFFFF3047)
-    val background = Color(0xFF08090C)
-    val surface = Color(0xFF111318)
-    val surfaceVariant = Color(0xFF181B22)
-    val secondaryText = Color(0xFF9EA3AD)
+    val red = RedBoxCrimson
+    val background = RedBoxBackground
+    val surface = RedBoxSurface
+    val surfaceVariant = RedBoxSurfaceElevated
+    val secondaryText = RedBoxTextSecondary
 
     if (showCpuOptions) {
         AlertDialog(
@@ -738,11 +740,10 @@ fun CreateVMScreen(
                             if (createStep > 0) createStep-- else onBack()
                         }
                     ) {
-                        Text(
-                            text = "‹",
-                            color = Color.White,
-                            fontSize = 34.sp,
-                            fontWeight = FontWeight.Light
+                        Icon(
+                            imageVector = Icons.Filled.ArrowBack,
+                            contentDescription = "Back",
+                            tint = Color.White
                         )
                     }
                 },

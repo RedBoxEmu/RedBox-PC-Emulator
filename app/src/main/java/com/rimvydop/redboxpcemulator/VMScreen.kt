@@ -16,8 +16,14 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.layout.size
+import com.rimvydop.redboxpcemulator.ui.theme.*
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -111,6 +117,7 @@ fun VMScreen(
 
     var preferredDisplayFps by remember { mutableStateOf(0) }
     var showFpsMenu by remember { mutableStateOf(false) }
+    var showShutdownConfirmation by remember { mutableStateOf(false) }
 
     /*
      * v0.2.0 Mouse Pointer v2
@@ -552,38 +559,31 @@ fun VMScreen(
                     RedBoxVmAnimatedToolbar(visible = showFullscreenToolbar) {
                         Card(
                             modifier = Modifier
-                                .padding(top = 8.dp),
-                            shape =
-                                androidx.compose.foundation.shape.RoundedCornerShape(
-                                    16.dp
-                                ),
+                                .padding(top = 10.dp),
+                            shape = RoundedCornerShape(20.dp),
                             colors = CardDefaults.cardColors(
-                                containerColor = Color(0xF214171F)
-                            )
+                                containerColor = Color(0xF20F131C)
+                            ),
+                            border = BorderStroke(1.dp, RedBoxGlassBorderGradient)
                         ) {
                             Row(
                                 modifier = Modifier.padding(
-                                    horizontal = 5.dp,
+                                    horizontal = 6.dp,
                                     vertical = 4.dp
                                 ),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(1.dp)
+                                horizontalArrangement = Arrangement.spacedBy(2.dp)
                             ) {
                                 /*
-                                 * Small RedBox identity mark. It is intentionally
-                                 * non-clickable so it cannot steal VM controls.
+                                 * Small RedBox identity mark.
                                  */
                                 Box(
                                     modifier = Modifier
-                                        .padding(horizontal = 5.dp)
-                                        .width(24.dp)
-                                        .height(24.dp)
+                                        .padding(horizontal = 6.dp)
+                                        .size(26.dp)
                                         .background(
-                                            color = Color(0xFFE53935),
-                                            shape =
-                                                androidx.compose.foundation.shape.RoundedCornerShape(
-                                                    7.dp
-                                                )
+                                            color = RedBoxCrimson,
+                                            shape = RoundedCornerShape(8.dp)
                                         ),
                                     contentAlignment = Alignment.Center
                                 ) {
@@ -665,6 +665,15 @@ fun VMScreen(
                                 )
 
                                 RedBoxToolbarButton(
+                                    icon = "⏹",
+                                    label = "Stop",
+                                    danger = true,
+                                    onClick = {
+                                        showShutdownConfirmation = true
+                                    }
+                                )
+
+                                RedBoxToolbarButton(
                                     icon = "‹",
                                     label = "RedBox",
                                     onClick = onBack
@@ -684,56 +693,97 @@ fun VMScreen(
                         Card(
                             modifier = Modifier
                                 .align(Alignment.TopCenter)
-                                .padding(top = 6.dp)
+                                .padding(top = 8.dp)
                                 .clickable {
                                     showFullscreenToolbar = true
                                 },
-                            shape =
-                                androidx.compose.foundation.shape.RoundedCornerShape(
-                                    12.dp
-                                ),
+                            shape = RoundedCornerShape(16.dp),
                             colors = CardDefaults.cardColors(
-                                containerColor = Color(0xD9101216)
-                            )
+                                containerColor = Color(0xF00F131C)
+                            ),
+                            border = BorderStroke(1.dp, RedBoxGlassBorderGradient)
                         ) {
                             Row(
                                 modifier = Modifier.padding(
-                                    horizontal = 10.dp,
-                                    vertical = 5.dp
+                                    horizontal = 12.dp,
+                                    vertical = 6.dp
                                 ),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 Box(
                                     modifier = Modifier
-                                        .width(18.dp)
-                                        .height(18.dp)
-                                        .background(
-                                            color = Color(0xFFE53935),
-                                            shape =
-                                                androidx.compose.foundation.shape.RoundedCornerShape(
-                                                    5.dp
-                                                )
-                                        ),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                        text = "R",
-                                        color = Color.White,
-                                        fontSize = 10.sp,
-                                        fontWeight = FontWeight.Black
-                                    )
-                                }
+                                        .size(8.dp)
+                                        .clip(CircleShape)
+                                        .background(RedBoxStatusOnline)
+                                )
 
                                 Text(
-                                    text = "RedBox  ▾",
+                                    text = "${vm.name} • RUNNING",
                                     color = Color.White,
-                                    fontWeight = FontWeight.SemiBold,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 11.sp,
+                                    letterSpacing = 0.5.sp
+                                )
+
+                                Text(
+                                    text = "▾",
+                                    color = RedBoxTextSecondary,
                                     fontSize = 11.sp
                                 )
                             }
                         }
                     }
+                }
+
+                if (showShutdownConfirmation) {
+                    AlertDialog(
+                        onDismissRequest = { showShutdownConfirmation = false },
+                        shape = RoundedCornerShape(22.dp),
+                        containerColor = RedBoxSurface,
+                        tonalElevation = 16.dp,
+                        title = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Filled.Close,
+                                    contentDescription = null,
+                                    tint = RedBoxCrimson,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                                Spacer(Modifier.width(10.dp))
+                                Text(
+                                    text = "Shutdown Machine?",
+                                    fontWeight = FontWeight.Black,
+                                    fontSize = 18.sp,
+                                    color = Color.White
+                                )
+                            }
+                        },
+                        text = {
+                            Text(
+                                text = "Request ACPI shutdown for '${vm.name}'? Make sure guest work has been saved.",
+                                color = RedBoxTextSecondary,
+                                fontSize = 13.sp
+                            )
+                        },
+                        confirmButton = {
+                            Button(
+                                onClick = {
+                                    showShutdownConfirmation = false
+                                    onStop()
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = RedBoxCrimson),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Text("SHUTDOWN", fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                            }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { showShutdownConfirmation = false }) {
+                                Text("CANCEL", color = RedBoxTextSecondary, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                            }
+                        }
+                    )
                 }
             }
 
@@ -804,23 +854,28 @@ fun VMScreen(
                     )
 
                     Button(
-                        onClick = onStop,
+                        onClick = { showShutdownConfirmation = true },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(56.dp),
-                        shape =
-                            androidx.compose.foundation.shape.RoundedCornerShape(
-                                18.dp
-                            ),
+                            .height(54.dp),
+                        shape = RoundedCornerShape(16.dp),
                         colors = ButtonDefaults.buttonColors(
-                            containerColor =
-                                Color(0xFFB3261E)
+                            containerColor = RedBoxCrimson
                         )
                     ) {
+                        Icon(
+                            imageVector = Icons.Filled.Close,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                            tint = Color.White
+                        )
+                        Spacer(Modifier.width(8.dp))
                         Text(
-                            text = "Stop VM",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 15.sp
+                            text = "SHUTDOWN VIRTUAL MACHINE",
+                            fontWeight = FontWeight.Black,
+                            fontSize = 12.sp,
+                            letterSpacing = 1.sp,
+                            color = Color.White
                         )
                     }
 
@@ -851,6 +906,7 @@ private fun RedBoxToolbarButton(
     icon: String,
     label: String,
     active: Boolean = false,
+    danger: Boolean = false,
     onClick: () -> Unit
 ) {
     val vector = when (label) {
@@ -861,27 +917,46 @@ private fun RedBoxToolbarButton(
         "FPS Auto", "30 FPS", "60 FPS", "90 FPS", "120 FPS" -> Icons.Filled.Tune
         "RedBox" -> Icons.Filled.ArrowBack
         "Hide" -> Icons.Filled.KeyboardArrowUp
+        "Stop" -> Icons.Filled.Close
         else -> Icons.Filled.Tune
+    }
+    val buttonBg = when {
+        danger -> Color(0xFF4A0E17)
+        active -> Color(0xFF6E2332)
+        else -> Color(0xFF1E2330)
+    }
+    val iconTint = when {
+        danger -> Color(0xFFFF5268)
+        active -> Color(0xFFFF9EAB)
+        else -> Color.White
     }
     Column(
         modifier = Modifier
             .clickable(onClick = onClick)
-            .padding(horizontal = 9.dp, vertical = 7.dp),
+            .padding(horizontal = 7.dp, vertical = 5.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Surface(
-            shape = androidx.compose.foundation.shape.RoundedCornerShape(13.dp),
-            color = if (active) Color(0xFF6E2332) else Color(0xFF272C37)
+            shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
+            color = buttonBg,
+            border = BorderStroke(1.dp, if (danger) Color(0x66FF2A42) else Color(0x18FFFFFF))
         ) {
-            Box(Modifier.padding(9.dp), contentAlignment = Alignment.Center) {
-                Icon(vector, contentDescription = label,
-                    tint = if (active) Color(0xFFFF9EAB) else Color.White,
-                    modifier = Modifier.width(20.dp).height(20.dp))
+            Box(Modifier.padding(8.dp), contentAlignment = Alignment.Center) {
+                Icon(
+                    vector,
+                    contentDescription = label,
+                    tint = iconTint,
+                    modifier = Modifier.size(18.dp)
+                )
             }
         }
-        Spacer(Modifier.height(4.dp))
-        Text(label, color = Color(0xFFE8EAF0), fontSize = 10.sp,
-            fontWeight = FontWeight.Medium)
+        Spacer(Modifier.height(3.dp))
+        Text(
+            label,
+            color = if (danger) Color(0xFFFF8A99) else Color(0xFFC5CEE0),
+            fontSize = 9.sp,
+            fontWeight = if (active || danger) FontWeight.Bold else FontWeight.Medium
+        )
     }
 }
 
